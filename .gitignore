@@ -1,0 +1,6 @@
+audit_logs/*.json
+audit_logs/*.html
+insights.log
+.env
+__pycache__/
+*.pyc

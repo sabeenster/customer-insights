@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customer Insights Report</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f7; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7; padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px; width:100%; background-color:#ffffff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background-color:#1a1a2e; padding:32px 40px;">
+              <h1 style="color:#ffffff; margin:0; font-size:22px; font-weight:600;">Customer Insights Report</h1>
+              <p style="color:#a0a0b8; margin:8px 0 0 0; font-size:14px;">
+                {{ period_start }} &mdash; {{ period_end }}
+              </p>
+            </td>
+          </tr>
+
+          <!-- Data Sources Banner -->
+          <tr>
+            <td style="padding:20px 40px; background-color:#f8f9fa; border-bottom:1px solid #e9ecef;">
+              <p style="margin:0; font-size:13px; color:#6c757d; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Data Sources</p>
+              <table cellpadding="0" cellspacing="0" style="margin-top:8px;">
+                {% for source_name, source_info in data_sources.items() %}
+                <tr>
+                  <td style="padding:2px 0;">
+                    {% if source_info.status == 'ok' %}
+                    <span style="color:#28a745; font-size:14px;">&#10003;</span>
+                    {% else %}
+                    <span style="color:#dc3545; font-size:14px;">&#10007;</span>
+                    {% endif %}
+                    <span style="color:#495057; font-size:13px; margin-left:6px;">
+                      {{ source_name }}: {{ source_info.record_count }} records
+                      {% if source_info.date_range %}({{ source_info.date_range }}){% endif %}
+                      {% if source_info.error %}<em style="color:#dc3545;"> &mdash; {{ source_info.error }}</em>{% endif %}
+                    </span>
+                  </td>
+                </tr>
+                {% endfor %}
+              </table>
+            </td>
+          </tr>
+
+          <!-- Insight Sections -->
+          {% for section in sections %}
+          <tr>
+            <td style="padding:24px 40px; border-bottom:1px solid #f0f0f0;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="
+                    border-left:4px solid
+                    {% if section.severity == 'critical' %}#dc3545
+                    {% elif section.severity == 'warning' %}#ffc107
+                    {% elif section.severity == 'positive' %}#28a745
+                    {% else %}#6c757d
+                    {% endif %};
+                    padding-left:16px;
+                  ">
+                    <h2 style="margin:0 0 4px 0; font-size:16px; color:#1a1a2e;">{{ section.title }}</h2>
+                    <!-- Confidence badge -->
+                    <span style="
+                      display:inline-block;
+                      font-size:11px;
+                      font-weight:600;
+                      text-transform:uppercase;
+                      letter-spacing:0.5px;
+                      padding:2px 8px;
+                      border-radius:3px;
+                      margin-bottom:12px;
+                      {% if section.confidence == 'high' %}
+                      background-color:#d4edda; color:#155724;
+                      {% elif section.confidence == 'medium' %}
+                      background-color:#fff3cd; color:#856404;
+                      {% else %}
+                      background-color:#f8d7da; color:#721c24;
+                      {% endif %}
+                    ">{{ section.confidence }} confidence</span>
+
+                    <div style="font-size:14px; line-height:1.6; color:#333333; margin-top:8px;">
+                      {{ section.content_html | safe }}
+                    </div>
+
+                    <!-- Source citation -->
+                    {% if section.based_on %}
+                    <p style="margin:12px 0 0 0; font-size:12px; color:#868e96; font-style:italic;">
+                      Based on: {{ section.based_on }}
+                    </p>
+                    {% endif %}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:24px 40px; background-color:#f8f9fa; border-top:1px solid #e9ecef;">
+              <p style="margin:0; font-size:12px; color:#868e96; line-height:1.5;">
+                Report ID: {{ run_id }} | Generated: {{ generated_at }}<br>
+                Sources: {% for name, info in data_sources.items() %}{{ name }} ({% if info.status == 'ok' %}&#10003;{% else %}&#10007;{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}
+              </p>
+              <p style="margin:12px 0 0 0; font-size:11px; color:#adb5bd;">
+                This report was generated by Customer Insights powered by AI analysis. All insights are grounded in the data sources listed above.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
