@@ -124,7 +124,7 @@ class AnalysisEngine:
 
         payload = {
             "model": CLAUDE_MODEL,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": user_prompt}],
         }
@@ -148,6 +148,8 @@ class AnalysisEngine:
             insights = json.loads(text.strip())
         except json.JSONDecodeError as e:
             log.error(f"Failed to parse Claude response as JSON: {e}")
+            log.error(f"Text length: {len(text)}, first 200 chars: {text[:200]}")
+            log.error(f"Last 200 chars: {text[-200:]}")
             insights = {
                 "sections": [{
                     "id": "error",
