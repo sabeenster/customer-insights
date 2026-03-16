@@ -271,6 +271,9 @@ def get_agentway_metrics() -> dict | None:
 # Run this in Beekeeper Studio against the Agentway PostgreSQL database,
 # then export the results as CSV and upload via POST /upload/agentway-csv
 #
+# NOTE: Replace the project slug in the WHERE clause to generate for a different brand.
+#
+# === Future Kind ===
 # SELECT
 #     t.friendly_id,
 #     t.created_at AS ticket_created_at,
@@ -294,7 +297,8 @@ def get_agentway_metrics() -> dict | None:
 # JOIN ticket_topic_sets tts
 #     ON tts.id = tt.topic_set_id
 # WHERE
-#     t.status = 'closed'
+#     p.slug = 'future'
+#     AND t.status = 'closed'
 #     AND t.closed_at IS NOT NULL
 # ORDER BY
 #     t.closed_at DESC;
