@@ -76,9 +76,8 @@ async def generate_and_send_report():
     log.info(f"=== Report generation started (run: {audit.run_id}) ===")
 
     try:
-        # 1. Fetch Shopify data
+        # 1. Fetch Shopify orders only (customer metrics derived from orders)
         orders = []
-        customers = []
         try:
             orders = await shopify.fetch_orders(DEFAULT_LOOKBACK_DAYS)
             audit.log_data_source(
@@ -89,18 +88,8 @@ async def generate_and_send_report():
             audit.log_data_source("Shopify Orders", 0, error=str(e))
             log.error(f"Shopify orders fetch failed: {e}")
 
-        try:
-            customers = await shopify.fetch_customers(DEFAULT_LOOKBACK_DAYS)
-            audit.log_data_source(
-                "Shopify Customers", len(customers),
-                date_range=f"last {DEFAULT_LOOKBACK_DAYS} days",
-            )
-        except Exception as e:
-            audit.log_data_source("Shopify Customers", 0, error=str(e))
-            log.error(f"Shopify customers fetch failed: {e}")
-
-        # 2. Compute metrics
-        metrics = shopify.compute_metrics(orders, customers, DEFAULT_LOOKBACK_DAYS)
+        # 2. Compute metrics (customer metrics derived from orders — no separate fetch)
+        metrics = shopify.compute_metrics(orders, DEFAULT_LOOKBACK_DAYS)
         audit.log_metrics(metrics)
 
         # 3. Load Agentway data from CSV (graceful degradation)

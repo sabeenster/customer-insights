@@ -67,26 +67,15 @@ class ShopifyClient:
         }
         return await self._paginated_get("orders", params, "orders")
 
-    async def fetch_customers(self, days_back: int = DEFAULT_LOOKBACK_DAYS) -> list[dict]:
-        """Fetch customers updated in the last N days."""
-        since = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
-        log.info(f"Fetching customers since {since}")
-        params = {
-            "updated_at_min": since,
-            "limit": 250,
-            "fields": "id,created_at,orders_count,total_spent,tags,first_name,last_name",
-        }
-        return await self._paginated_get("customers", params, "customers")
-
-    def compute_metrics(self, orders: list[dict], customers: list[dict], days_back: int = DEFAULT_LOOKBACK_DAYS) -> dict:
-        """Compute customer behavior metrics from raw Shopify data."""
+    def compute_metrics(self, orders: list[dict], days_back: int = DEFAULT_LOOKBACK_DAYS) -> dict:
+        """Compute all metrics from orders data alone — no separate customer fetch needed."""
         now = datetime.now(timezone.utc)
         period_start = now - timedelta(days=days_back)
 
         metrics = {
             "period": {"start": period_start.strftime("%Y-%m-%d"), "end": now.strftime("%Y-%m-%d"), "days": days_back},
             "orders": self._order_metrics(orders),
-            "customers": self._customer_metrics(customers),
+            "customers": self._customer_metrics_from_orders(orders),
             "cohorts": self._cohort_analysis(orders),
             "products": self._product_metrics(orders),
         }
@@ -132,40 +121,38 @@ class ShopifyClient:
             "weekly_trend": [{"week": w, "orders": c} for w, c in sorted_weeks],
         }
 
-    def _customer_metrics(self, customers: list[dict]) -> dict:
-        if not customers:
-            return {"total_customers": 0, "note": "No customer data available"}
+    def _customer_metrics_from_orders(self, orders: list[dict]) -> dict:
+        """Derive customer metrics from orders — no separate customer API call needed."""
+        if not orders:
+            return {"total_customers": 0, "note": "No order data available"}
 
-        total = len(customers)
-        order_counts = []
-        spend_amounts = []
-
-        for c in customers:
+        # Group orders by customer ID
+        customer_data = defaultdict(lambda: {"order_count": 0, "total_spent": 0.0})
+        for o in orders:
+            cust = o.get("customer")
+            if not cust:
+                continue
+            cid = cust.get("id", "unknown")
             try:
-                oc = int(c.get("orders_count", 0))
+                price = float(o.get("total_price", 0))
             except (ValueError, TypeError):
-                oc = 0
-            order_counts.append(oc)
+                price = 0
+            customer_data[cid]["order_count"] += 1
+            customer_data[cid]["total_spent"] += price
 
-            try:
-                spent = float(c.get("total_spent", 0))
-            except (ValueError, TypeError):
-                spent = 0
-            spend_amounts.append(spent)
+        total = len(customer_data)
+        one_time = sum(1 for c in customer_data.values() if c["order_count"] == 1)
+        repeat = sum(1 for c in customer_data.values() if c["order_count"] > 1)
+        total_spent = sum(c["total_spent"] for c in customer_data.values())
 
-        one_time = sum(1 for oc in order_counts if oc == 1)
-        repeat = sum(1 for oc in order_counts if oc > 1)
-        never_ordered = sum(1 for oc in order_counts if oc == 0)
-
-        repeat_rate = (repeat / (one_time + repeat) * 100) if (one_time + repeat) > 0 else 0
-        avg_lifetime_value = sum(spend_amounts) / total if total else 0
+        repeat_rate = (repeat / total * 100) if total > 0 else 0
+        avg_lifetime_value = total_spent / total if total else 0
 
         # Order frequency distribution
         freq_dist = defaultdict(int)
-        for oc in order_counts:
-            if oc == 0:
-                freq_dist["0 orders"] += 1
-            elif oc == 1:
+        for c in customer_data.values():
+            oc = c["order_count"]
+            if oc == 1:
                 freq_dist["1 order"] += 1
             elif oc <= 3:
                 freq_dist["2-3 orders"] += 1
@@ -178,10 +165,9 @@ class ShopifyClient:
             "total_customers": total,
             "one_time_buyers": one_time,
             "repeat_buyers": repeat,
-            "never_ordered": never_ordered,
             "repeat_purchase_rate": round(repeat_rate, 1),
             "average_lifetime_value": round(avg_lifetime_value, 2),
-            "avg_orders_per_customer": round(sum(order_counts) / total, 1) if total else 0,
+            "avg_orders_per_customer": round(sum(c["order_count"] for c in customer_data.values()) / total, 1) if total else 0,
             "order_frequency_distribution": dict(freq_dist),
         }
 
