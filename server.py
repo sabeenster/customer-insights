@@ -209,9 +209,10 @@ async def audit_detail(run_id: str):
 
 
 @app.post("/upload/agentway-csv")
-async def upload_agentway_csv(file: UploadFile = File(...)):
+async def upload_agentway_csv(file: UploadFile = File(...), project: str = None):
     """
     Upload an Agentway CSV export from the SQL query.
+    Optionally filter by project name (e.g., ?project=Future Kind).
     The CSV is parsed, metrics are computed, and data is saved for the next report.
     """
     content = await file.read()
@@ -224,12 +225,26 @@ async def upload_agentway_csv(file: UploadFile = File(...)):
             status_code=400,
         )
 
+    # Filter by project if specified
+    if project:
+        tickets = [t for t in tickets if t.get("project_name", "").lower() == project.lower()]
+        if not tickets:
+            # List available projects for the user
+            all_tickets = parse_csv(csv_text)
+            available = sorted(set(t.get("project_name", "unknown") for t in all_tickets))
+            return JSONResponse(
+                {"error": f"No tickets found for project '{project}'", "available_projects": available},
+                status_code=400,
+            )
+        log.info(f"Filtered to project '{project}': {len(tickets)} tickets")
+
     save_data(tickets)
     metrics = compute_support_metrics(tickets)
 
     log.info(f"Agentway CSV uploaded: {len(tickets)} tickets, {len(metrics.get('top_topics', []))} topics")
     return {
         "status": "accepted",
+        "project_filter": project or "all",
         "tickets_parsed": len(tickets),
         "top_topics": metrics.get("top_topics", [])[:5],
         "message": "Data saved. It will be included in the next report generation.",
