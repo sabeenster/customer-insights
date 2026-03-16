@@ -17,45 +17,44 @@ from config import ANTHROPIC_API_KEY, ANTHROPIC_API_URL, CLAUDE_MODEL
 
 log = logging.getLogger("insights.analysis")
 
-SYSTEM_PROMPT = """You are a senior customer analytics consultant preparing a weekly executive briefing for a brand CEO.
+SYSTEM_PROMPT = """You are a senior customer experience consultant preparing a weekly executive briefing for a brand CEO.
+Your job is to analyze customer support ticket data and surface actionable insights about what customers are experiencing.
 
 CRITICAL RULES:
 1. Every insight MUST reference specific numbers from the data provided. Never invent or estimate statistics.
-2. If the data is insufficient to support a conclusion, explicitly say "Insufficient data for this analysis" rather than guessing.
-3. Cite the metric name and value for every claim (e.g., "repeat purchase rate of 34.2%").
-4. Compare numbers where possible (e.g., "up from 28.1% last month" — only if the data supports it).
+2. If the data is insufficient to support a conclusion, explicitly say so rather than guessing.
+3. Cite the metric name and value for every claim (e.g., "Order Issues represent 24.1% of all tickets").
+4. Compare numbers where possible (e.g., trending topics vs prior period — only if the data supports it).
 5. Be direct and specific. No filler, no generic business advice that could apply to any company.
-6. If a data source was unavailable, clearly state which sections are affected and why.
 
 STYLE:
 - Write for a CEO who is busy but sharp. Lead with the most important finding.
 - Use plain language, not jargon. If you must use a term, define it briefly.
 - Be honest about what the data shows, even if it's unflattering.
 - Prioritize actionable observations over descriptive summaries.
+- Focus on WHAT customers are struggling with and WHY it matters to the business.
 
 OUTPUT FORMAT:
 Return a JSON object with this exact structure:
 {
   "sections": [
     {
-      "id": "executive_summary",
-      "title": "Executive Summary",
+      "id": "section_id",
+      "title": "Section Title",
       "content_html": "<p>HTML content with <strong>bold</strong> for key numbers...</p>",
       "severity": "info|positive|warning|critical",
       "confidence": "high|medium|low",
       "based_on": "Description of data source and key metrics used"
-    },
-    ...additional sections...
+    }
   ]
 }
 
 REQUIRED SECTIONS (in order):
-1. executive_summary — 3-5 bullet points, most important findings. Severity reflects overall health.
-2. retention_health — Repeat purchase rate, cohort retention, churn signals. This is the most important section for customer behavior.
-3. revenue_patterns — AOV trends, revenue concentration, product mix.
-4. customer_behavior — Purchase frequency changes, segment movements, new vs returning ratio.
-5. support_signals — Only if Agentway/support data is provided. Topic spikes, sentiment shifts, emerging issues.
-6. recommended_actions — 2-3 specific, prioritized actions with expected impact. Each must tie back to a data point.
+1. executive_summary — 3-5 bullet points of the most important findings about customer experience. Severity reflects overall CX health.
+2. top_issues — The biggest customer pain points by volume. What are customers complaining about most? Break down the top topics with percentages.
+3. trending_topics — What's getting worse or better? Highlight topics that are spiking or declining vs the prior period.
+4. resolution_quality — Average resolution times, conversation complexity (messages per ticket). Are issues being resolved efficiently?
+5. recommended_actions — 2-3 specific, prioritized actions with expected impact. Each must tie back to a data point from the support data.
 
 SEVERITY GUIDE:
 - "positive": metric is good or improving
@@ -115,13 +114,13 @@ class AnalysisEngine:
         status = response.status_code if response else "no response"
         raise Exception(f"Failed after {max_retries} retries (last status: {status})")
 
-    async def generate_insights(self, shopify_metrics: dict, agentway_data: dict | None = None) -> dict:
+    async def generate_insights(self, agentway_data: dict) -> dict:
         """
-        Generate AI-powered insights from metrics data.
+        Generate AI-powered insights from support ticket data.
 
         Returns the full prompt and response for audit logging, plus parsed sections.
         """
-        user_prompt = self._build_user_prompt(shopify_metrics, agentway_data)
+        user_prompt = self._build_user_prompt(agentway_data)
 
         payload = {
             "model": CLAUDE_MODEL,
@@ -168,41 +167,17 @@ class AnalysisEngine:
             "insights": insights,
         }
 
-    def _build_user_prompt(self, shopify_metrics: dict, agentway_data: dict | None) -> str:
+    def _build_user_prompt(self, agentway_data: dict) -> str:
         parts = []
 
-        parts.append("# Customer Insights Data\n")
-        parts.append(f"Report period: {shopify_metrics.get('period', {}).get('start', '?')} to {shopify_metrics.get('period', {}).get('end', '?')}\n")
+        parts.append("# Customer Support Insights Data\n")
+        parts.append(f"Total tickets analyzed: {agentway_data.get('total_tickets', 0)}\n")
 
-        # Data source availability
-        parts.append("## Data Sources Available")
-        parts.append(f"- Shopify: ✓ (orders and customers)")
-        if agentway_data:
-            parts.append(f"- Support/Agentway: ✓ (tickets and topics)")
-        else:
-            parts.append(f"- Support/Agentway: ✗ (not available — skip the support_signals section or note data is missing)")
-
-        # Shopify metrics
-        parts.append("\n## Shopify Metrics\n")
-        parts.append("### Order Metrics")
-        parts.append(json.dumps(shopify_metrics.get("orders", {}), indent=2))
-
-        parts.append("\n### Customer Metrics")
-        parts.append(json.dumps(shopify_metrics.get("customers", {}), indent=2))
-
-        parts.append("\n### Cohort Analysis")
-        parts.append(json.dumps(shopify_metrics.get("cohorts", {}), indent=2))
-
-        parts.append("\n### Product Performance")
-        parts.append(json.dumps(shopify_metrics.get("products", {}), indent=2))
-
-        # Agentway data
-        if agentway_data:
-            parts.append("\n## Support / Agentway Data\n")
-            parts.append(json.dumps(agentway_data, indent=2))
+        parts.append("## Support Ticket Data\n")
+        parts.append(json.dumps(agentway_data, indent=2))
 
         parts.append("\n---\n")
-        parts.append("Analyze this data and return the JSON response as specified in your instructions.")
+        parts.append("Analyze this support ticket data and return the JSON response as specified in your instructions.")
         parts.append("Remember: every insight must cite specific numbers. Do not invent statistics.")
 
         return "\n".join(parts)

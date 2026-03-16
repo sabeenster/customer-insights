@@ -76,23 +76,7 @@ async def generate_and_send_report():
     log.info(f"=== Report generation started (run: {audit.run_id}) ===")
 
     try:
-        # 1. Fetch Shopify orders only (customer metrics derived from orders)
-        orders = []
-        try:
-            orders = await shopify.fetch_orders(DEFAULT_LOOKBACK_DAYS)
-            audit.log_data_source(
-                "Shopify Orders", len(orders),
-                date_range=f"last {DEFAULT_LOOKBACK_DAYS} days",
-            )
-        except Exception as e:
-            audit.log_data_source("Shopify Orders", 0, error=str(e))
-            log.error(f"Shopify orders fetch failed: {e}")
-
-        # 2. Compute metrics (customer metrics derived from orders — no separate fetch)
-        metrics = shopify.compute_metrics(orders, DEFAULT_LOOKBACK_DAYS)
-        audit.log_metrics(metrics)
-
-        # 3. Load Agentway data from CSV (graceful degradation)
+        # 1. Load Agentway support ticket data from CSV
         agentway_data = None
         try:
             agentway_metrics = get_agentway_metrics()
@@ -103,22 +87,31 @@ async def generate_and_send_report():
                 audit.log_data_source("Agentway", 0, error="No CSV data uploaded yet — upload via POST /upload/agentway-csv")
         except Exception as e:
             audit.log_data_source("Agentway", 0, error=str(e))
-            log.warning(f"Agentway data load failed (non-blocking): {e}")
+            log.warning(f"Agentway data load failed: {e}")
 
-        # 4. Generate AI insights
-        result = await analysis.generate_insights(metrics, agentway_data)
+        if not agentway_data:
+            audit.log_error("No Agentway data available — cannot generate report")
+            audit.complete("failed")
+            log.error("Report generation aborted: no support ticket data")
+            return
+
+        # 2. Generate AI insights from support ticket data
+        result = await analysis.generate_insights(agentway_data)
         audit.log_claude_prompt(result["system_prompt"], result["user_prompt"])
         audit.log_claude_response(result["raw_response"])
         insights = result["insights"]
 
-        # 5. Build HTML report
-        period = metrics.get("period", {})
+        # 3. Build HTML report
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        period_start = (now - timedelta(days=DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        period_end = now.strftime("%Y-%m-%d")
         html = build_report(
             insights=insights,
             run_id=audit.run_id,
             data_sources=audit.data_sources,
-            period_start=period.get("start", "?"),
-            period_end=period.get("end", "?"),
+            period_start=period_start,
+            period_end=period_end,
         )
         latest_report_html = html
 
@@ -127,8 +120,8 @@ async def generate_and_send_report():
         with open(report_path, "w") as f:
             f.write(html)
 
-        # 6. Send email
-        subject = f"Customer Insights Report — {period.get('start', '')} to {period.get('end', '')}"
+        # 4. Send email
+        subject = f"Customer Insights Report — {period_start} to {period_end}"
         email_result = await send_report(html, subject)
         audit.log_email(
             recipients=email_result.get("recipients", []),
