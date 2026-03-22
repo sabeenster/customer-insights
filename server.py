@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from config import PORT, DEFAULT_LOOKBACK_DAYS
 from shopify_client import ShopifyClient
 from agentway_client import parse_csv, merge_datasets, save_data, get_agentway_metrics, compute_support_metrics
+from richpanel_client import parse_richpanel_csv, compute_richpanel_metrics
 from analysis_engine import AnalysisEngine
 from report_builder import build_report
 from email_sender import send_report
@@ -76,18 +77,26 @@ async def generate_and_send_report():
     log.info(f"=== Report generation started (run: {audit.run_id}) ===")
 
     try:
-        # 1. Load Agentway support ticket data from CSV
+        # 1. Load support ticket data from CSV (Agentway or Rich Panel format)
         agentway_data = None
         try:
-            agentway_metrics = get_agentway_metrics()
-            if agentway_metrics and agentway_metrics.get("total_tickets", 0) > 0:
-                agentway_data = agentway_metrics
-                audit.log_data_source("Agentway", agentway_metrics["total_tickets"])
+            from agentway_client import load_data
+            raw_tickets = load_data()
+            if raw_tickets and len(raw_tickets) > 0:
+                # Detect source: Rich Panel tickets have "_source": "richpanel"
+                is_richpanel = any(t.get("_source") == "richpanel" for t in raw_tickets)
+                if is_richpanel:
+                    agentway_data = compute_richpanel_metrics(raw_tickets)
+                    audit.log_data_source("Rich Panel", agentway_data["total_tickets"])
+                    log.info(f"Rich Panel data loaded: {agentway_data['total_tickets']} tickets")
+                else:
+                    agentway_data = compute_support_metrics(raw_tickets)
+                    audit.log_data_source("Agentway", agentway_data["total_tickets"])
             else:
-                audit.log_data_source("Agentway", 0, error="No CSV data uploaded yet — upload via POST /upload/agentway-csv")
+                audit.log_data_source("Support Data", 0, error="No CSV data uploaded yet")
         except Exception as e:
-            audit.log_data_source("Agentway", 0, error=str(e))
-            log.warning(f"Agentway data load failed: {e}")
+            audit.log_data_source("Support Data", 0, error=str(e))
+            log.warning(f"Data load failed: {e}")
 
         if not agentway_data:
             audit.log_error("No Agentway data available — cannot generate report")
@@ -300,6 +309,38 @@ async def upload_insights(
         "with_structured_topics": with_topics,
         "top_topics": metrics.get("top_topics", [])[:5],
         "message": "Data merged and saved. Use POST /generate-report to create the report.",
+    }
+
+
+@app.post("/upload/richpanel-csv")
+async def upload_richpanel_csv(file: UploadFile = File(...)):
+    """
+    Upload a Rich Panel CSV export.
+    Parses conversations, computes aggregate metrics (no API calls).
+    Then use POST /generate-report to create the insights report.
+    """
+    content = await file.read()
+    csv_text = content.decode("utf-8-sig")
+
+    tickets = parse_richpanel_csv(csv_text)
+    if not tickets:
+        return JSONResponse(
+            {"error": "No tickets found in CSV. Check this is a Rich Panel export."},
+            status_code=400,
+        )
+
+    save_data(tickets)
+    metrics = compute_richpanel_metrics(tickets)
+
+    log.info(f"Rich Panel CSV uploaded: {len(tickets)} tickets")
+    return {
+        "status": "accepted",
+        "source": "richpanel",
+        "tickets_parsed": len(tickets),
+        "channel_breakdown": metrics.get("channel_breakdown", []),
+        "assignee_breakdown": metrics.get("assignee_breakdown", []),
+        "status_breakdown": metrics.get("status_breakdown", {}),
+        "message": "Data saved. Use POST /generate-report to create the report.",
     }
 
 

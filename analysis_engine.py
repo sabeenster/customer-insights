@@ -17,7 +17,7 @@ from config import ANTHROPIC_API_KEY, ANTHROPIC_API_URL, CLAUDE_MODEL
 
 log = logging.getLogger("insights.analysis")
 
-SYSTEM_PROMPT = """You are a senior customer experience consultant preparing a weekly executive briefing for a brand CEO.
+SYSTEM_PROMPT_AGENTWAY = """You are a senior customer experience consultant preparing a weekly executive briefing for a brand CEO.
 Your job is to analyze customer support ticket data and surface actionable insights about what customers are experiencing.
 
 CRITICAL RULES:
@@ -66,6 +66,57 @@ CONFIDENCE GUIDE:
 - "high": based on large sample size and clear trend
 - "medium": based on limited data or short time window
 - "low": based on very small sample, single data point, or missing context"""
+
+SYSTEM_PROMPT_RICHPANEL = """You are a senior customer experience consultant preparing an executive briefing for a brand CEO.
+Your job is to analyze customer support conversation data and surface actionable insights about customer experience, team efficiency, and automation opportunities.
+
+This data comes from a helpdesk platform (Rich Panel) and contains real customer conversations. There are NO pre-assigned topics — you must identify the key themes yourself from the conversation samples provided.
+
+CRITICAL RULES:
+1. Every insight MUST reference specific numbers from the structured metrics provided. Never invent statistics.
+2. When identifying themes from conversation samples, be clear these are OBSERVED PATTERNS, not exact counts. Say "based on the sample of X conversations reviewed" not "X% of all tickets."
+3. Quantitative claims (channel breakdown, volume trends, assignee distribution) come from the structured metrics — these are exact.
+4. Qualitative claims (customer themes, sentiment, automation candidates) come from conversation samples — flag these as sample-based observations.
+5. Be direct and specific. No filler, no generic business advice.
+
+STYLE:
+- Write for a CEO evaluating their support operation. Lead with the biggest opportunity.
+- Focus on: What are customers asking about? Where is the team spending time? What could be automated?
+- Be honest about efficiency gaps and staffing distribution.
+
+OUTPUT FORMAT:
+Return a JSON object with this exact structure:
+{
+  "sections": [
+    {
+      "id": "section_id",
+      "title": "Section Title",
+      "content_html": "<p>HTML content with <strong>bold</strong> for key numbers...</p>",
+      "severity": "info|positive|warning|critical",
+      "confidence": "high|medium|low",
+      "based_on": "Description of data source and key metrics used"
+    }
+  ]
+}
+
+REQUIRED SECTIONS (in order):
+1. executive_summary — 3-5 bullet points: overall support health, biggest issues, key opportunity. Severity reflects operational health.
+2. customer_themes — Identify the top 5-8 customer themes/categories from the conversation samples. Group similar conversations. For each theme, describe what customers are asking about and estimate relative prevalence based on the sample.
+3. channel_analysis — Break down support volume by channel (Instagram, Facebook, email, etc.). Which channels dominate? What does the channel mix tell us about how customers prefer to reach out?
+4. team_efficiency — Analyze assignee distribution, response times (if available), and workload balance. Is the team properly staffed?
+5. automation_opportunities — Based on the conversation samples, which types of inquiries are repetitive and could be handled by an AI agent? Estimate the % of conversations that are automatable. Be specific about WHICH types of questions could be automated and WHY.
+6. recommended_actions — 3-4 specific, prioritized actions with expected impact. Each must tie back to data.
+
+SEVERITY GUIDE:
+- "positive": metric is good or improving
+- "info": neutral observation, for awareness
+- "warning": metric declining or needs attention
+- "critical": requires immediate action
+
+CONFIDENCE GUIDE:
+- "high": based on large sample + clear structured data
+- "medium": based on conversation samples (qualitative)
+- "low": based on very limited data or single data point"""
 
 
 class AnalysisEngine:
@@ -120,12 +171,14 @@ class AnalysisEngine:
 
         Returns the full prompt and response for audit logging, plus parsed sections.
         """
+        is_richpanel = agentway_data.get("data_source") == "richpanel"
+        system_prompt = SYSTEM_PROMPT_RICHPANEL if is_richpanel else SYSTEM_PROMPT_AGENTWAY
         user_prompt = self._build_user_prompt(agentway_data, shopify_summary)
 
         payload = {
             "model": CLAUDE_MODEL,
             "max_tokens": 8192,
-            "system": SYSTEM_PROMPT,
+            "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],
         }
 
@@ -163,25 +216,32 @@ class AnalysisEngine:
             }
 
         return {
-            "system_prompt": SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "raw_response": raw_response,
             "insights": insights,
         }
 
     def _build_user_prompt(self, agentway_data: dict, shopify_summary: dict = None) -> str:
+        is_richpanel = agentway_data.get("data_source") == "richpanel"
         parts = []
 
         parts.append("# Customer Support Insights Data\n")
         parts.append(f"Total tickets analyzed: {agentway_data.get('total_tickets', 0)}\n")
 
+        if is_richpanel:
+            return self._build_richpanel_prompt(agentway_data, parts, shopify_summary)
+        else:
+            return self._build_agentway_prompt(agentway_data, parts, shopify_summary)
+
+    def _build_agentway_prompt(self, data: dict, parts: list, shopify_summary: dict = None) -> str:
         # Structured metrics (topic counts, trends, resolution times)
-        metrics_data = {k: v for k, v in agentway_data.items() if k != "topic_summaries_sample"}
+        metrics_data = {k: v for k, v in data.items() if k != "topic_summaries_sample"}
         parts.append("## Structured Metrics (topic counts, trends, resolution times)\n")
         parts.append(json.dumps(metrics_data, indent=2))
 
         # Topic summaries — rich context for deeper understanding
-        summaries = agentway_data.get("topic_summaries_sample", [])
+        summaries = data.get("topic_summaries_sample", [])
         if summaries:
             parts.append("\n## Sample Ticket Summaries (real customer conversations)\n")
             parts.append("These are detailed summaries of actual support conversations. Use them to understand")
@@ -191,22 +251,7 @@ class AnalysisEngine:
                 parts.append(f"**Ticket {s['friendly_id']}** ({s.get('status', 'unknown')}) — Topics: {topics_str}")
                 parts.append(f"> {s['topic_summary']}\n")
 
-        # Optional Shopify context (lightweight aggregate numbers only)
-        if shopify_summary:
-            parts.append("\n## Shopify Store Context (aggregate metrics for reference)\n")
-            parts.append("Use these numbers ONLY to provide context (e.g., support contact rate as % of orders).")
-            parts.append("Do NOT invent Shopify metrics not listed here.\n")
-            cp = shopify_summary.get("current_period", {})
-            pp = shopify_summary.get("prior_period", {})
-            parts.append(f"- **Current period** ({cp.get('start')} to {cp.get('end')}): {cp.get('total_orders', 0)} orders, ${cp.get('total_revenue', 0):,.0f} revenue, ${cp.get('avg_order_value', 0):.2f} AOV")
-            parts.append(f"- **Prior period** ({pp.get('start')} to {pp.get('end')}): {pp.get('total_orders', 0)} orders, ${pp.get('total_revenue', 0):,.0f} revenue")
-            parts.append(f"- Order trend: {shopify_summary.get('order_trend', 'unknown')}")
-            parts.append(f"- Revenue trend: {shopify_summary.get('revenue_trend', 'unknown')}")
-            top_prods = shopify_summary.get("top_products", [])
-            if top_prods:
-                parts.append("- Top products by order frequency:")
-                for p in top_prods[:5]:
-                    parts.append(f"  - {p['name']}: {p['order_count']} orders, {p['total_quantity']} units")
+        self._append_shopify_context(parts, shopify_summary)
 
         parts.append("\n---\n")
         parts.append("Analyze this support ticket data and return the JSON response as specified in your instructions.")
@@ -218,3 +263,53 @@ class AnalysisEngine:
         parts.append("Remember: every insight must cite specific numbers. Do not invent statistics.")
 
         return "\n".join(parts)
+
+    def _build_richpanel_prompt(self, data: dict, parts: list, shopify_summary: dict = None) -> str:
+        # Structured metrics (exact counts from Python, not LLM-generated)
+        metrics_data = {k: v for k, v in data.items() if k != "conversation_samples"}
+        parts.append("## Structured Metrics (exact counts from data)\n")
+        parts.append("These numbers are computed directly from the CSV. Use them for all quantitative claims.\n")
+        parts.append(json.dumps(metrics_data, indent=2))
+
+        # Conversation samples — for qualitative theme identification
+        samples = data.get("conversation_samples", [])
+        if samples:
+            parts.append(f"\n## Conversation Samples ({len(samples)} representative tickets)\n")
+            parts.append("These are REAL customer conversations sampled across channels.")
+            parts.append("Use them to identify the TOP THEMES customers are contacting about.")
+            parts.append("Group similar conversations into categories. Be specific about what customers are asking.\n")
+            for s in samples:
+                parts.append(f"**#{s['friendly_id']}** [{s.get('channel', 'unknown')}] ({s.get('status', '')})")
+                parts.append(f"Subject: {s.get('subject', 'N/A')}")
+                if s.get("conversation_snippet"):
+                    parts.append(f"> {s['conversation_snippet']}")
+                parts.append("")
+
+        self._append_shopify_context(parts, shopify_summary)
+
+        parts.append("\n---\n")
+        parts.append("Analyze this support data and return the JSON response as specified in your instructions.")
+        parts.append("Use structured metrics for quantitative claims (channel breakdown, volume, assignee data).")
+        parts.append("Use conversation samples to identify customer themes and automation opportunities.")
+        parts.append("When citing themes from samples, say 'based on sample review' — do not present sample patterns as exact percentages of the full dataset.")
+        parts.append("Remember: every insight must be traceable to the data provided. Do not invent statistics.")
+
+        return "\n".join(parts)
+
+    def _append_shopify_context(self, parts: list, shopify_summary: dict = None):
+        if not shopify_summary:
+            return
+        parts.append("\n## Shopify Store Context (aggregate metrics for reference)\n")
+        parts.append("Use these numbers ONLY to provide context (e.g., support contact rate as % of orders).")
+        parts.append("Do NOT invent Shopify metrics not listed here.\n")
+        cp = shopify_summary.get("current_period", {})
+        pp = shopify_summary.get("prior_period", {})
+        parts.append(f"- **Current period** ({cp.get('start')} to {cp.get('end')}): {cp.get('total_orders', 0)} orders, ${cp.get('total_revenue', 0):,.0f} revenue, ${cp.get('avg_order_value', 0):.2f} AOV")
+        parts.append(f"- **Prior period** ({pp.get('start')} to {pp.get('end')}): {pp.get('total_orders', 0)} orders, ${pp.get('total_revenue', 0):,.0f} revenue")
+        parts.append(f"- Order trend: {shopify_summary.get('order_trend', 'unknown')}")
+        parts.append(f"- Revenue trend: {shopify_summary.get('revenue_trend', 'unknown')}")
+        top_prods = shopify_summary.get("top_products", [])
+        if top_prods:
+            parts.append("- Top products by order frequency:")
+            for p in top_prods[:5]:
+                parts.append(f"  - {p['name']}: {p['order_count']} orders, {p['total_quantity']} units")
