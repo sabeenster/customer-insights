@@ -114,13 +114,13 @@ class AnalysisEngine:
         status = response.status_code if response else "no response"
         raise Exception(f"Failed after {max_retries} retries (last status: {status})")
 
-    async def generate_insights(self, agentway_data: dict) -> dict:
+    async def generate_insights(self, agentway_data: dict, shopify_summary: dict = None) -> dict:
         """
         Generate AI-powered insights from support ticket data.
 
         Returns the full prompt and response for audit logging, plus parsed sections.
         """
-        user_prompt = self._build_user_prompt(agentway_data)
+        user_prompt = self._build_user_prompt(agentway_data, shopify_summary)
 
         payload = {
             "model": CLAUDE_MODEL,
@@ -169,7 +169,7 @@ class AnalysisEngine:
             "insights": insights,
         }
 
-    def _build_user_prompt(self, agentway_data: dict) -> str:
+    def _build_user_prompt(self, agentway_data: dict, shopify_summary: dict = None) -> str:
         parts = []
 
         parts.append("# Customer Support Insights Data\n")
@@ -191,11 +191,30 @@ class AnalysisEngine:
                 parts.append(f"**Ticket {s['friendly_id']}** ({s.get('status', 'unknown')}) — Topics: {topics_str}")
                 parts.append(f"> {s['topic_summary']}\n")
 
+        # Optional Shopify context (lightweight aggregate numbers only)
+        if shopify_summary:
+            parts.append("\n## Shopify Store Context (aggregate metrics for reference)\n")
+            parts.append("Use these numbers ONLY to provide context (e.g., support contact rate as % of orders).")
+            parts.append("Do NOT invent Shopify metrics not listed here.\n")
+            cp = shopify_summary.get("current_period", {})
+            pp = shopify_summary.get("prior_period", {})
+            parts.append(f"- **Current period** ({cp.get('start')} to {cp.get('end')}): {cp.get('total_orders', 0)} orders, ${cp.get('total_revenue', 0):,.0f} revenue, ${cp.get('avg_order_value', 0):.2f} AOV")
+            parts.append(f"- **Prior period** ({pp.get('start')} to {pp.get('end')}): {pp.get('total_orders', 0)} orders, ${pp.get('total_revenue', 0):,.0f} revenue")
+            parts.append(f"- Order trend: {shopify_summary.get('order_trend', 'unknown')}")
+            parts.append(f"- Revenue trend: {shopify_summary.get('revenue_trend', 'unknown')}")
+            top_prods = shopify_summary.get("top_products", [])
+            if top_prods:
+                parts.append("- Top products by order frequency:")
+                for p in top_prods[:5]:
+                    parts.append(f"  - {p['name']}: {p['order_count']} orders, {p['total_quantity']} units")
+
         parts.append("\n---\n")
         parts.append("Analyze this support ticket data and return the JSON response as specified in your instructions.")
         parts.append("Use the structured metrics for quantitative claims (percentages, counts, trends).")
         if summaries:
             parts.append("Use the ticket summaries to add qualitative depth — what are customers actually saying and feeling?")
+        if shopify_summary:
+            parts.append("Use Shopify data only for context (contact rates, product correlation). Do NOT fabricate Shopify numbers.")
         parts.append("Remember: every insight must cite specific numbers. Do not invent statistics.")
 
         return "\n".join(parts)

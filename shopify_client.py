@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 """
-Shopify Client
-==============
-Fetches order and customer data from Shopify Admin REST API.
-Computes customer behavior metrics for the insights report.
+Shopify Client (Lightweight, Read-Only)
+=======================================
+Pulls ONLY aggregate summary metrics from Shopify Admin REST API.
+NO writes. NO bulk data pulls. Minimal API calls for context.
+
+Purpose: provide denominator/context for support ticket analysis.
+E.g., "118 delivery tickets out of 5,000 orders = 2.4% contact rate"
 """
 
 import logging
-import asyncio
 from datetime import datetime, timedelta, timezone
-from collections import defaultdict
-from urllib.parse import urljoin
 
 import httpx
 
-from config import SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN, SHOPIFY_API_VERSION, DEFAULT_LOOKBACK_DAYS
+from config import SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN, SHOPIFY_API_VERSION
 
 log = logging.getLogger("insights.shopify")
 
 
 class ShopifyClient:
+    """Read-only Shopify client. Makes 3-4 lightweight API calls max."""
+
     def __init__(self):
         self.base_url = f"https://{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}"
         self.headers = {
@@ -29,230 +31,13 @@ class ShopifyClient:
         }
         self.http = httpx.AsyncClient(timeout=30.0, headers=self.headers)
 
-    async def _paginated_get(self, endpoint: str, params: dict, resource_key: str) -> list:
-        """Fetch all pages from a Shopify REST endpoint using Link-header pagination."""
-        all_items = []
-        url = f"{self.base_url}/{endpoint}.json"
-
-        while url:
-            await asyncio.sleep(0.5)  # Shopify rate limit: 2 req/s
-            response = await self.http.get(url, params=params if not all_items else None)
-            response.raise_for_status()
-            data = response.json()
-            items = data.get(resource_key, [])
-            all_items.extend(items)
-            log.info(f"  Fetched {len(items)} {resource_key} (total: {len(all_items)})")
-
-            # Cursor-based pagination via Link header
-            url = None
-            link_header = response.headers.get("link", "")
-            if 'rel="next"' in link_header:
-                for part in link_header.split(","):
-                    if 'rel="next"' in part:
-                        url = part.split("<")[1].split(">")[0]
-                        params = None  # params are embedded in the next URL
-                        break
-
-        return all_items
-
-    async def fetch_orders(self, days_back: int = DEFAULT_LOOKBACK_DAYS) -> list[dict]:
-        """Fetch orders from the last N days."""
-        since = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
-        log.info(f"Fetching orders since {since}")
-        params = {
-            "created_at_min": since,
-            "status": "any",
-            "limit": 250,
-            "fields": "id,created_at,total_price,customer,line_items,financial_status,order_number",
-        }
-        return await self._paginated_get("orders", params, "orders")
-
-    def compute_metrics(self, orders: list[dict], days_back: int = DEFAULT_LOOKBACK_DAYS) -> dict:
-        """Compute all metrics from orders data alone — no separate customer fetch needed."""
-        now = datetime.now(timezone.utc)
-        period_start = now - timedelta(days=days_back)
-
-        metrics = {
-            "period": {"start": period_start.strftime("%Y-%m-%d"), "end": now.strftime("%Y-%m-%d"), "days": days_back},
-            "orders": self._order_metrics(orders),
-            "customers": self._customer_metrics_from_orders(orders),
-            "cohorts": self._cohort_analysis(orders),
-            "products": self._product_metrics(orders),
-        }
-        return metrics
-
-    def _order_metrics(self, orders: list[dict]) -> dict:
-        if not orders:
-            return {"total_orders": 0, "note": "No order data available"}
-
-        totals = []
-        weekly_counts = defaultdict(int)
-        daily_counts = defaultdict(int)
-
-        for o in orders:
-            try:
-                price = float(o.get("total_price", 0))
-            except (ValueError, TypeError):
-                price = 0
-            totals.append(price)
-
-            created = o.get("created_at", "")[:10]
-            daily_counts[created] += 1
-            # ISO week
-            try:
-                dt = datetime.fromisoformat(created)
-                week_key = dt.strftime("%Y-W%W")
-                weekly_counts[week_key] += 1
-            except ValueError:
-                pass
-
-        avg_order_value = sum(totals) / len(totals) if totals else 0
-        total_revenue = sum(totals)
-
-        # Weekly trend (last 4 weeks sorted)
-        sorted_weeks = sorted(weekly_counts.items())[-4:]
-
-        return {
-            "total_orders": len(orders),
-            "total_revenue": round(total_revenue, 2),
-            "average_order_value": round(avg_order_value, 2),
-            "min_order_value": round(min(totals), 2) if totals else 0,
-            "max_order_value": round(max(totals), 2) if totals else 0,
-            "weekly_trend": [{"week": w, "orders": c} for w, c in sorted_weeks],
-        }
-
-    def _customer_metrics_from_orders(self, orders: list[dict]) -> dict:
-        """Derive customer metrics from orders — no separate customer API call needed."""
-        if not orders:
-            return {"total_customers": 0, "note": "No order data available"}
-
-        # Group orders by customer ID
-        customer_data = defaultdict(lambda: {"order_count": 0, "total_spent": 0.0})
-        for o in orders:
-            cust = o.get("customer")
-            if not cust:
-                continue
-            cid = cust.get("id", "unknown")
-            try:
-                price = float(o.get("total_price", 0))
-            except (ValueError, TypeError):
-                price = 0
-            customer_data[cid]["order_count"] += 1
-            customer_data[cid]["total_spent"] += price
-
-        total = len(customer_data)
-        one_time = sum(1 for c in customer_data.values() if c["order_count"] == 1)
-        repeat = sum(1 for c in customer_data.values() if c["order_count"] > 1)
-        total_spent = sum(c["total_spent"] for c in customer_data.values())
-
-        repeat_rate = (repeat / total * 100) if total > 0 else 0
-        avg_lifetime_value = total_spent / total if total else 0
-
-        # Order frequency distribution
-        freq_dist = defaultdict(int)
-        for c in customer_data.values():
-            oc = c["order_count"]
-            if oc == 1:
-                freq_dist["1 order"] += 1
-            elif oc <= 3:
-                freq_dist["2-3 orders"] += 1
-            elif oc <= 5:
-                freq_dist["4-5 orders"] += 1
-            else:
-                freq_dist["6+ orders"] += 1
-
-        return {
-            "total_customers": total,
-            "one_time_buyers": one_time,
-            "repeat_buyers": repeat,
-            "repeat_purchase_rate": round(repeat_rate, 1),
-            "average_lifetime_value": round(avg_lifetime_value, 2),
-            "avg_orders_per_customer": round(sum(c["order_count"] for c in customer_data.values()) / total, 1) if total else 0,
-            "order_frequency_distribution": dict(freq_dist),
-        }
-
-    def _cohort_analysis(self, orders: list[dict]) -> dict:
-        """Group customers by first-order month, track repurchase within 30/60/90 days."""
-        customer_orders = defaultdict(list)
-        for o in orders:
-            cust = o.get("customer")
-            if not cust:
-                continue
-            cid = cust.get("id")
-            if cid:
-                try:
-                    dt = datetime.fromisoformat(o["created_at"].replace("Z", "+00:00"))
-                    customer_orders[cid].append(dt)
-                except (ValueError, KeyError):
-                    pass
-
-        cohorts = defaultdict(lambda: {"total": 0, "repurchased_30d": 0, "repurchased_60d": 0, "repurchased_90d": 0})
-
-        for cid, dates in customer_orders.items():
-            dates.sort()
-            first = dates[0]
-            cohort_key = first.strftime("%Y-%m")
-            cohorts[cohort_key]["total"] += 1
-
-            if len(dates) > 1:
-                gap = (dates[1] - first).days
-                if gap <= 30:
-                    cohorts[cohort_key]["repurchased_30d"] += 1
-                if gap <= 60:
-                    cohorts[cohort_key]["repurchased_60d"] += 1
-                if gap <= 90:
-                    cohorts[cohort_key]["repurchased_90d"] += 1
-
-        # Convert to list sorted by month
-        result = []
-        for month in sorted(cohorts.keys()):
-            c = cohorts[month]
-            result.append({
-                "month": month,
-                "new_customers": c["total"],
-                "repurchased_30d": c["repurchased_30d"],
-                "repurchased_60d": c["repurchased_60d"],
-                "repurchased_90d": c["repurchased_90d"],
-                "retention_30d_pct": round(c["repurchased_30d"] / c["total"] * 100, 1) if c["total"] else 0,
-            })
-        return {"monthly_cohorts": result}
-
-    def _product_metrics(self, orders: list[dict]) -> dict:
-        """Top products by revenue and order frequency."""
-        product_stats = defaultdict(lambda: {"revenue": 0, "quantity": 0, "order_count": 0})
-
-        for o in orders:
-            seen_products = set()
-            for item in o.get("line_items", []):
-                name = item.get("title", "Unknown")
-                try:
-                    qty = int(item.get("quantity", 0))
-                    price = float(item.get("price", 0))
-                except (ValueError, TypeError):
-                    qty, price = 0, 0
-
-                product_stats[name]["revenue"] += price * qty
-                product_stats[name]["quantity"] += qty
-                if name not in seen_products:
-                    product_stats[name]["order_count"] += 1
-                    seen_products.add(name)
-
-        # Top 10 by revenue
-        by_revenue = sorted(product_stats.items(), key=lambda x: x[1]["revenue"], reverse=True)[:10]
-        top_products = [
-            {"name": name, "revenue": round(s["revenue"], 2), "quantity": s["quantity"], "order_count": s["order_count"]}
-            for name, s in by_revenue
-        ]
-
-        return {
-            "unique_products_sold": len(product_stats),
-            "top_products_by_revenue": top_products,
-        }
+    def is_configured(self) -> bool:
+        return bool(SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN)
 
     async def health_check(self) -> dict:
         """Check if Shopify API is reachable."""
-        if not SHOPIFY_STORE_URL or not SHOPIFY_ACCESS_TOKEN:
-            return {"status": "not_configured", "error": "Missing SHOPIFY_STORE_URL or SHOPIFY_ACCESS_TOKEN"}
+        if not self.is_configured():
+            return {"status": "not_configured"}
         try:
             response = await self.http.get(f"{self.base_url}/shop.json")
             response.raise_for_status()
@@ -260,3 +45,142 @@ class ShopifyClient:
             return {"status": "connected", "shop_name": shop.get("name", "unknown")}
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    async def get_summary_metrics(self, days_back: int = 90) -> dict | None:
+        """
+        Fetch lightweight aggregate metrics from Shopify.
+        Makes exactly 3 API calls:
+          1. Order count for the period
+          2. Order count for prior period (for comparison)
+          3. Top products by sales (single page, limit 10)
+
+        Returns None if Shopify is not configured.
+        """
+        if not self.is_configured():
+            return None
+
+        now = datetime.now(timezone.utc)
+        period_start = now - timedelta(days=days_back)
+        prior_start = period_start - timedelta(days=days_back)
+
+        try:
+            # Call 1: Order count + total for current period
+            current = await self._order_summary(period_start, now)
+
+            # Call 2: Order count + total for prior period (comparison)
+            prior = await self._order_summary(prior_start, period_start)
+
+            # Call 3: Top products (single page, 10 items)
+            top_products = await self._top_products(period_start)
+
+            summary = {
+                "period_days": days_back,
+                "current_period": {
+                    "start": period_start.strftime("%Y-%m-%d"),
+                    "end": now.strftime("%Y-%m-%d"),
+                    "total_orders": current["count"],
+                    "total_revenue": current["revenue"],
+                    "avg_order_value": round(current["revenue"] / current["count"], 2) if current["count"] > 0 else 0,
+                },
+                "prior_period": {
+                    "start": prior_start.strftime("%Y-%m-%d"),
+                    "end": period_start.strftime("%Y-%m-%d"),
+                    "total_orders": prior["count"],
+                    "total_revenue": prior["revenue"],
+                },
+                "order_trend": _trend_direction(current["count"], prior["count"]),
+                "revenue_trend": _trend_direction(current["revenue"], prior["revenue"]),
+                "top_products": top_products,
+            }
+
+            log.info(f"Shopify summary: {current['count']} orders, ${current['revenue']:.0f} revenue ({days_back}d)")
+            return summary
+
+        except Exception as e:
+            log.warning(f"Shopify summary fetch failed: {e}")
+            return None
+
+    async def _order_summary(self, since: datetime, until: datetime) -> dict:
+        """Get order count and total revenue for a date range. Single API call."""
+        response = await self.http.get(
+            f"{self.base_url}/orders/count.json",
+            params={
+                "created_at_min": since.isoformat(),
+                "created_at_max": until.isoformat(),
+                "status": "any",
+            },
+        )
+        response.raise_for_status()
+        count = response.json().get("count", 0)
+
+        # Get revenue from a small sample to estimate (avoid paginating all orders)
+        # Use limit=250 single page to compute average, then extrapolate
+        if count == 0:
+            return {"count": 0, "revenue": 0.0}
+
+        response = await self.http.get(
+            f"{self.base_url}/orders.json",
+            params={
+                "created_at_min": since.isoformat(),
+                "created_at_max": until.isoformat(),
+                "status": "any",
+                "limit": 250,
+                "fields": "total_price",
+            },
+        )
+        response.raise_for_status()
+        orders = response.json().get("orders", [])
+
+        if not orders:
+            return {"count": count, "revenue": 0.0}
+
+        sample_total = sum(float(o.get("total_price", 0)) for o in orders)
+
+        if len(orders) >= count:
+            # We got all orders, exact revenue
+            return {"count": count, "revenue": round(sample_total, 2)}
+        else:
+            # Extrapolate from sample
+            avg = sample_total / len(orders)
+            estimated_revenue = avg * count
+            return {"count": count, "revenue": round(estimated_revenue, 2)}
+
+    async def _top_products(self, since: datetime) -> list[dict]:
+        """Get top products from recent orders. Single API call, no pagination."""
+        response = await self.http.get(
+            f"{self.base_url}/orders.json",
+            params={
+                "created_at_min": since.isoformat(),
+                "status": "any",
+                "limit": 250,
+                "fields": "line_items",
+            },
+        )
+        response.raise_for_status()
+        orders = response.json().get("orders", [])
+
+        product_counts = {}
+        for o in orders:
+            for item in o.get("line_items", []):
+                name = item.get("title", "Unknown")
+                if name not in product_counts:
+                    product_counts[name] = {"orders": 0, "quantity": 0}
+                product_counts[name]["orders"] += 1
+                product_counts[name]["quantity"] += int(item.get("quantity", 0))
+
+        sorted_products = sorted(product_counts.items(), key=lambda x: x[1]["orders"], reverse=True)[:10]
+        return [
+            {"name": name, "order_count": stats["orders"], "total_quantity": stats["quantity"]}
+            for name, stats in sorted_products
+        ]
+
+
+def _trend_direction(current: float, prior: float) -> str:
+    if prior == 0:
+        return "no_prior_data"
+    change = (current - prior) / prior * 100
+    if change > 10:
+        return f"up_{round(change)}%"
+    elif change < -10:
+        return f"down_{round(abs(change))}%"
+    return "stable"

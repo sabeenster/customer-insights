@@ -95,8 +95,21 @@ async def generate_and_send_report():
             log.error("Report generation aborted: no support ticket data")
             return
 
-        # 2. Generate AI insights from support ticket data
-        result = await analysis.generate_insights(agentway_data)
+        # 1b. Optionally fetch lightweight Shopify summary (if configured)
+        shopify_summary = None
+        if shopify.is_configured():
+            try:
+                shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
+                if shopify_summary:
+                    audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
+                    log.info(f"Shopify summary loaded: {shopify_summary['current_period']['total_orders']} orders")
+            except Exception as e:
+                log.warning(f"Shopify summary skipped: {e}")
+        else:
+            log.info("Shopify not configured — generating report from support data only")
+
+        # 2. Generate AI insights from support ticket data + optional Shopify context
+        result = await analysis.generate_insights(agentway_data, shopify_summary=shopify_summary)
         audit.log_claude_prompt(result["system_prompt"], result["user_prompt"])
         audit.log_claude_response(result["raw_response"])
         insights = result["insights"]
