@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import PORT, DEFAULT_LOOKBACK_DAYS
 from shopify_client import ShopifyClient
-from agentway_client import parse_csv, save_data, get_agentway_metrics, compute_support_metrics
+from agentway_client import parse_csv, merge_datasets, save_data, get_agentway_metrics, compute_support_metrics
 from analysis_engine import AnalysisEngine
 from report_builder import build_report
 from email_sender import send_report
@@ -211,12 +211,11 @@ async def audit_detail(run_id: str):
 @app.post("/upload/agentway-csv")
 async def upload_agentway_csv(file: UploadFile = File(...), project: str = None):
     """
-    Upload an Agentway CSV export from the SQL query.
-    Optionally filter by project name (e.g., ?project=Future Kind).
-    The CSV is parsed, metrics are computed, and data is saved for the next report.
+    Upload a single CSV (either insights or topics format).
+    Auto-detects the format. For best results, use POST /upload/insights instead.
     """
     content = await file.read()
-    csv_text = content.decode("utf-8-sig")  # Handle BOM from Excel/Beekeeper exports
+    csv_text = content.decode("utf-8-sig")
 
     tickets = parse_csv(csv_text)
     if not tickets:
@@ -225,29 +224,69 @@ async def upload_agentway_csv(file: UploadFile = File(...), project: str = None)
             status_code=400,
         )
 
-    # Filter by project if specified
     if project:
         tickets = [t for t in tickets if t.get("project_name", "").lower() == project.lower()]
         if not tickets:
-            # List available projects for the user
-            all_tickets = parse_csv(csv_text)
-            available = sorted(set(t.get("project_name", "unknown") for t in all_tickets))
             return JSONResponse(
-                {"error": f"No tickets found for project '{project}'", "available_projects": available},
+                {"error": f"No tickets found for project '{project}'"},
                 status_code=400,
             )
-        log.info(f"Filtered to project '{project}': {len(tickets)} tickets")
 
     save_data(tickets)
     metrics = compute_support_metrics(tickets)
 
-    log.info(f"Agentway CSV uploaded: {len(tickets)} tickets, {len(metrics.get('top_topics', []))} topics")
+    log.info(f"Single CSV uploaded: {len(tickets)} tickets")
     return {
         "status": "accepted",
-        "project_filter": project or "all",
         "tickets_parsed": len(tickets),
         "top_topics": metrics.get("top_topics", [])[:5],
         "message": "Data saved. It will be included in the next report generation.",
+    }
+
+
+@app.post("/upload/insights")
+async def upload_insights(
+    insights_file: UploadFile = File(..., description="Agentway dashboard CSV with Topic Summary"),
+    topics_file: UploadFile = File(..., description="Beekeeper SQL CSV with topic_name, resolution_hours, etc."),
+):
+    """
+    Upload TWO CSV files for the most comprehensive analysis:
+      - insights_file: Agentway dashboard export (has rich Topic Summary per ticket)
+      - topics_file: Beekeeper SQL export (has topic_name, resolution_hours, message_count)
+
+    The files are merged on friendly_id to combine rich summaries with structured metrics.
+    Then automatically generates a report and emails it.
+    """
+    insights_content = await insights_file.read()
+    topics_content = await topics_file.read()
+
+    insights_csv = insights_content.decode("utf-8-sig")
+    topics_csv = topics_content.decode("utf-8-sig")
+
+    tickets = merge_datasets(insights_csv, topics_csv)
+    if not tickets:
+        return JSONResponse(
+            {"error": "No tickets found after merging. Check CSV column headers."},
+            status_code=400,
+        )
+
+    # Filter out spam
+    tickets = [t for t in tickets if t.get("spam_verdict") != "spam"]
+
+    save_data(tickets)
+    metrics = compute_support_metrics(tickets)
+
+    with_summary = sum(1 for t in tickets if t.get("topic_summary"))
+    with_topics = sum(1 for t in tickets if t.get("topics"))
+
+    log.info(f"Merged upload: {len(tickets)} tickets ({with_summary} with summaries, {with_topics} with topics)")
+    return {
+        "status": "accepted",
+        "tickets_merged": len(tickets),
+        "with_topic_summaries": with_summary,
+        "with_structured_topics": with_topics,
+        "top_topics": metrics.get("top_topics", [])[:5],
+        "message": "Data merged and saved. Use POST /generate-report to create the report.",
     }
 
 

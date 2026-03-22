@@ -175,11 +175,27 @@ class AnalysisEngine:
         parts.append("# Customer Support Insights Data\n")
         parts.append(f"Total tickets analyzed: {agentway_data.get('total_tickets', 0)}\n")
 
-        parts.append("## Support Ticket Data\n")
-        parts.append(json.dumps(agentway_data, indent=2))
+        # Structured metrics (topic counts, trends, resolution times)
+        metrics_data = {k: v for k, v in agentway_data.items() if k != "topic_summaries_sample"}
+        parts.append("## Structured Metrics (topic counts, trends, resolution times)\n")
+        parts.append(json.dumps(metrics_data, indent=2))
+
+        # Topic summaries — rich context for deeper understanding
+        summaries = agentway_data.get("topic_summaries_sample", [])
+        if summaries:
+            parts.append("\n## Sample Ticket Summaries (real customer conversations)\n")
+            parts.append("These are detailed summaries of actual support conversations. Use them to understand")
+            parts.append("the NATURE and NUANCE of customer issues beyond what topic names alone reveal.\n")
+            for s in summaries:
+                topics_str = ", ".join(s.get("topics", [])) or "uncategorized"
+                parts.append(f"**Ticket {s['friendly_id']}** ({s.get('status', 'unknown')}) — Topics: {topics_str}")
+                parts.append(f"> {s['topic_summary']}\n")
 
         parts.append("\n---\n")
         parts.append("Analyze this support ticket data and return the JSON response as specified in your instructions.")
+        parts.append("Use the structured metrics for quantitative claims (percentages, counts, trends).")
+        if summaries:
+            parts.append("Use the ticket summaries to add qualitative depth — what are customers actually saying and feeling?")
         parts.append("Remember: every insight must cite specific numbers. Do not invent statistics.")
 
         return "\n".join(parts)

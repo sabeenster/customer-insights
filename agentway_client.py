@@ -3,13 +3,18 @@ from __future__ import annotations
 """
 Agentway Client
 ===============
-Processes Agentway support ticket data from CSV exports.
-The CSV is generated from a SQL query against the Agentway PostgreSQL database.
+Processes support ticket data from two CSV sources:
 
-Expected CSV columns:
-  friendly_id, ticket_created_at, closed_at, status, summary,
-  project_name, project_slug, topic_name, topic_description,
-  topic_set_version, resolution_hours, message_count
+1. **Insights CSV** (from Agentway dashboard export):
+   Friendly ID, Status, Customer Name, Customer Primary Identity,
+   Latest Activity At, Topic Summary, Spam Verdict, Closed Reason, Topic IDs
+
+2. **Topics CSV** (from Beekeeper SQL query):
+   friendly_id, ticket_created_at, closed_at, status, summary,
+   project_name, project_slug, topic_name, topic_description,
+   topic_set_version, resolution_hours, message_count
+
+The two files are merged on friendly_id to produce the richest possible dataset.
 """
 
 import csv
@@ -27,18 +32,57 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "audit_logs")
 AGENTWAY_DATA_PATH = os.path.join(DATA_DIR, "agentway_latest.json")
 
 
-def parse_csv(csv_content: str) -> list[dict]:
+def _detect_csv_format(headers: list[str]) -> str:
+    """Detect whether a CSV is the 'insights' format or 'topics' format."""
+    normalized = [h.strip().lower().replace(" ", "_") for h in headers]
+    if "topic_summary" in normalized:
+        return "insights"
+    if "topic_name" in normalized:
+        return "topics"
+    # Fallback: check for Friendly ID (insights) vs friendly_id (topics)
+    if "friendly_id" in normalized and "topic_set_version" in normalized:
+        return "topics"
+    return "insights"
+
+
+def parse_insights_csv(csv_content: str) -> dict[str, dict]:
     """
-    Parse Agentway CSV export into a list of ticket dicts.
+    Parse the Agentway dashboard 'Insights' CSV export.
+    Returns a dict keyed by friendly_id (numeric, no prefix).
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    result = {}
+    for row in reader:
+        cleaned = {k.strip().lower().replace(" ", "_"): v.strip() if v else None for k, v in row.items()}
+        fid = cleaned.get("friendly_id", "")
+        # Strip project prefix like "FUTURE-"
+        if "-" in fid:
+            fid = fid.split("-", 1)[1]
+        if not fid:
+            continue
+        result[fid] = {
+            "topic_summary": cleaned.get("topic_summary"),
+            "customer_name": cleaned.get("customer_name"),
+            "customer_email": cleaned.get("customer_primary_identity"),
+            "spam_verdict": cleaned.get("spam_verdict"),
+            "closed_reason": cleaned.get("closed_reason"),
+            "status": cleaned.get("status"),
+            "latest_activity": cleaned.get("latest_activity_at"),
+        }
+    log.info(f"Insights CSV: {len(result)} tickets with topic summaries")
+    return result
+
+
+def parse_topics_csv(csv_content: str) -> list[dict]:
+    """
+    Parse the Beekeeper SQL 'Topics' CSV export into a list of ticket dicts.
 
     The CSV contains one row per ticket × topic × topic_set_version.
-    A single ticket can appear across many topic set versions (e.g., 12 versions).
     We deduplicate by keeping only the LATEST topic_set_version per ticket,
     then aggregate multiple topics for the same ticket into a list.
     """
     reader = csv.DictReader(io.StringIO(csv_content))
 
-    # First pass: collect all rows, find max topic_set_version PER PROJECT
     all_rows = []
     project_max_version = defaultdict(int)
     for row in reader:
@@ -49,9 +93,8 @@ def parse_csv(csv_content: str) -> list[dict]:
         if v > project_max_version[project]:
             project_max_version[project] = v
 
-    log.info(f"CSV raw rows: {len(all_rows)}, projects: {dict(project_max_version)}")
+    log.info(f"Topics CSV raw rows: {len(all_rows)}, projects: {dict(project_max_version)}")
 
-    # Second pass: keep only rows from each project's latest version
     latest_rows = []
     for r in all_rows:
         project = r.get("project_name") or r.get("project_slug") or "unknown"
@@ -60,7 +103,6 @@ def parse_csv(csv_content: str) -> list[dict]:
             latest_rows.append(r)
     log.info(f"Rows after filtering to latest version per project: {len(latest_rows)}")
 
-    # Third pass: aggregate topics per ticket (a ticket may have multiple topic assignments)
     ticket_map = {}
     for row in latest_rows:
         tid = row.get("friendly_id")
@@ -89,7 +131,76 @@ def parse_csv(csv_content: str) -> list[dict]:
             })
 
     tickets = list(ticket_map.values())
-    log.info(f"Parsed {len(tickets)} unique tickets from CSV (latest versions per project: {dict(project_max_version)})")
+    log.info(f"Parsed {len(tickets)} unique tickets from Topics CSV")
+    return tickets
+
+
+def parse_csv(csv_content: str) -> list[dict]:
+    """
+    Auto-detect CSV format and parse accordingly.
+    Handles both insights and topics formats as a single file.
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    headers = reader.fieldnames or []
+    fmt = _detect_csv_format(headers)
+    log.info(f"Auto-detected CSV format: {fmt}")
+
+    if fmt == "topics":
+        return parse_topics_csv(csv_content)
+    else:
+        # Insights-only upload: convert to ticket list format
+        insights = parse_insights_csv(csv_content)
+        tickets = []
+        for fid, data in insights.items():
+            tickets.append({
+                "friendly_id": fid,
+                "status": data.get("status"),
+                "topic_summary": data.get("topic_summary"),
+                "topics": [],
+            })
+        return tickets
+
+
+def merge_datasets(insights_csv: str, topics_csv: str) -> list[dict]:
+    """
+    Merge two CSV files into one comprehensive dataset.
+
+    - insights_csv: rich topic summaries from Agentway dashboard
+    - topics_csv: structured topic names + metrics from Beekeeper SQL
+
+    Joins on friendly_id. Tickets in either file are included (full outer join).
+    """
+    insights_map = parse_insights_csv(insights_csv)
+    topics_tickets = parse_topics_csv(topics_csv)
+
+    # Build merged set from topics data (has structured metrics)
+    merged = {}
+    for ticket in topics_tickets:
+        fid = ticket["friendly_id"]
+        enrichment = insights_map.pop(fid, {})
+        ticket["topic_summary"] = enrichment.get("topic_summary")
+        ticket["customer_name"] = enrichment.get("customer_name")
+        ticket["spam_verdict"] = enrichment.get("spam_verdict")
+        ticket["closed_reason"] = enrichment.get("closed_reason")
+        merged[fid] = ticket
+
+    # Add tickets only in insights CSV (no structured topic data)
+    for fid, data in insights_map.items():
+        merged[fid] = {
+            "friendly_id": fid,
+            "status": data.get("status"),
+            "topic_summary": data.get("topic_summary"),
+            "customer_name": data.get("customer_name"),
+            "spam_verdict": data.get("spam_verdict"),
+            "closed_reason": data.get("closed_reason"),
+            "latest_activity": data.get("latest_activity"),
+            "topics": [],
+        }
+
+    tickets = list(merged.values())
+    with_summary = sum(1 for t in tickets if t.get("topic_summary"))
+    with_topics = sum(1 for t in tickets if t.get("topics"))
+    log.info(f"Merged: {len(tickets)} tickets ({with_summary} with summaries, {with_topics} with structured topics)")
     return tickets
 
 
@@ -219,6 +330,20 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
             })
     trending.sort(key=lambda x: x["recent_30d"], reverse=True)
 
+    # Sample topic summaries for AI context (up to 30 representative examples)
+    topic_summaries_sample = []
+    for t in tickets:
+        summary = t.get("topic_summary")
+        if summary and len(summary) > 20:
+            topic_summaries_sample.append({
+                "friendly_id": t.get("friendly_id"),
+                "status": t.get("status"),
+                "topic_summary": summary[:500],  # Cap length to control token usage
+                "topics": [tp.get("name") for tp in t.get("topics", []) if isinstance(tp, dict)],
+            })
+            if len(topic_summaries_sample) >= 30:
+                break
+
     return {
         "total_tickets": total,
         "top_topics": [{"topic": name, "count": count, "pct": round(count / total * 100, 1)} for name, count in top_topics],
@@ -234,6 +359,7 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
         },
         "weekly_volume": [{"week": w, "tickets": c} for w, c in sorted_weeks],
         "trending_topics": trending[:10],
+        "topic_summaries_sample": topic_summaries_sample,
     }
 
 
