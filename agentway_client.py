@@ -330,19 +330,55 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
             })
     trending.sort(key=lambda x: x["recent_30d"], reverse=True)
 
-    # Sample topic summaries for AI context (up to 30 representative examples)
+    # Sample topic summaries for AI context — representative across top topics
+    # Pick up to 2 examples per top topic, then fill remaining slots from other tickets
     topic_summaries_sample = []
+    seen_ids = set()
+    summaries_per_topic = defaultdict(int)
+    MAX_SAMPLES = 30
+    MAX_PER_TOPIC = 2
+
+    # First pass: get examples for each top topic
+    top_topic_names = {name for name, _ in top_topics}
     for t in tickets:
+        if len(topic_summaries_sample) >= MAX_SAMPLES:
+            break
         summary = t.get("topic_summary")
-        if summary and len(summary) > 20:
+        if not summary or len(summary) < 20:
+            continue
+        fid = t.get("friendly_id")
+        if fid in seen_ids:
+            continue
+        ticket_topics = [tp.get("name") for tp in t.get("topics", []) if isinstance(tp, dict)]
+        matched_top = [tp for tp in ticket_topics if tp in top_topic_names]
+        if matched_top and all(summaries_per_topic[tp] < MAX_PER_TOPIC for tp in matched_top):
             topic_summaries_sample.append({
-                "friendly_id": t.get("friendly_id"),
+                "friendly_id": fid,
                 "status": t.get("status"),
-                "topic_summary": summary[:500],  # Cap length to control token usage
-                "topics": [tp.get("name") for tp in t.get("topics", []) if isinstance(tp, dict)],
+                "topic_summary": summary[:500],
+                "topics": ticket_topics,
             })
-            if len(topic_summaries_sample) >= 30:
-                break
+            seen_ids.add(fid)
+            for tp in matched_top:
+                summaries_per_topic[tp] += 1
+
+    # Second pass: fill remaining slots with any other tickets that have summaries
+    for t in tickets:
+        if len(topic_summaries_sample) >= MAX_SAMPLES:
+            break
+        fid = t.get("friendly_id")
+        if fid in seen_ids:
+            continue
+        summary = t.get("topic_summary")
+        if not summary or len(summary) < 20:
+            continue
+        topic_summaries_sample.append({
+            "friendly_id": fid,
+            "status": t.get("status"),
+            "topic_summary": summary[:500],
+            "topics": [tp.get("name") for tp in t.get("topics", []) if isinstance(tp, dict)],
+        })
+        seen_ids.add(fid)
 
     return {
         "total_tickets": total,
@@ -393,13 +429,10 @@ def get_agentway_metrics() -> dict | None:
     return compute_support_metrics(tickets)
 
 
-# ── SQL Query Reference ───────────────────────────────────────────────────────
-# Run this in Beekeeper Studio against the Agentway PostgreSQL database,
-# then export the results as CSV and upload via POST /upload/agentway-csv
+# ── SQL Query Reference (Topics CSV) ─────────────────────────────────────────
+# Run in Beekeeper Studio against Agentway PostgreSQL, export as CSV.
+# Change p.slug for different brands. Change date filter as needed.
 #
-# NOTE: Replace the project slug in the WHERE clause to generate for a different brand.
-#
-# === Future Kind ===
 # SELECT
 #     t.friendly_id,
 #     t.created_at AS ticket_created_at,
@@ -414,17 +447,11 @@ def get_agentway_metrics() -> dict | None:
 #     EXTRACT(EPOCH FROM (t.closed_at - t.created_at)) / 3600 AS resolution_hours,
 #     (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS message_count
 # FROM tickets t
-# JOIN projects p
-#     ON p.id = t.project_id
-# JOIN ticket_topic_assignments tta
-#     ON tta.ticket_id = t.id
-# JOIN ticket_topics tt
-#     ON tt.id = tta.topic_id
-# JOIN ticket_topic_sets tts
-#     ON tts.id = tt.topic_set_id
+# JOIN projects p ON p.id = t.project_id
+# JOIN ticket_topic_assignments tta ON tta.ticket_id = t.id
+# JOIN ticket_topics tt ON tt.id = tta.topic_id
+# JOIN ticket_topic_sets tts ON tts.id = tt.topic_set_id
 # WHERE
 #     p.slug = 'future'
-#     AND t.status = 'closed'
-#     AND t.closed_at IS NOT NULL
-# ORDER BY
-#     t.closed_at DESC;
+#     AND t.created_at >= '2026-01-01'
+# ORDER BY t.created_at DESC;
