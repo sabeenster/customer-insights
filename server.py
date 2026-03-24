@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, BackgroundTasks, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -370,31 +371,74 @@ def _detect_brand_from_subject(subject: str) -> str | None:
     return None
 
 
+async def _fetch_resend_email(email_id: str) -> dict | None:
+    """Fetch full email details from Resend Received Emails API."""
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"https://api.resend.com/emails/{email_id}",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        log.error(f"Failed to fetch email {email_id} from Resend: {e}")
+        return None
+
+
+async def _fetch_resend_attachment(attachment_id: str) -> bytes | None:
+    """Download attachment content from Resend Attachments API."""
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(
+                f"https://api.resend.com/attachments/{attachment_id}",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # Resend returns base64-encoded content
+            import base64
+            return base64.b64decode(data.get("content", ""))
+    except Exception as e:
+        log.error(f"Failed to fetch attachment {attachment_id}: {e}")
+        return None
+
+
 @app.post("/webhook/inbound-email")
 async def inbound_email(request: Request, background_tasks: BackgroundTasks):
     """
-    Receive inbound emails from Resend webhook.
-    Expects email to otto@agentway.com with a CSV attachment.
-    Subject line must contain a brand name (e.g., "Future Kind Topics").
+    Receive inbound emails from Resend webhook (email.received event).
 
-    Resend inbound webhook payload:
-    {
-      "from": "sender@example.com",
-      "to": "otto@agentway.com",
-      "subject": "Future Kind Topics",
-      "attachments": [{"filename": "...", "content": "base64..."}]
-    }
+    Resend webhooks only contain metadata — we must call the Resend API
+    to fetch the actual email body and attachment content.
+
+    Flow:
+    1. Receive webhook with email metadata (sender, subject, attachment IDs)
+    2. Detect brand from subject line
+    3. Fetch CSV attachment via Resend Attachments API
+    4. Parse, save, and generate report
     """
     try:
         payload = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
 
-    sender = payload.get("from", "")
-    subject = payload.get("subject", "")
-    attachments = payload.get("attachments", [])
+    # Resend webhook wraps data in {"type": "email.received", "data": {...}}
+    event_type = payload.get("type", "")
+    event_data = payload.get("data", payload)  # fallback to root if no wrapper
 
-    log.info(f"Inbound email from {sender}, subject: '{subject}', attachments: {len(attachments)}")
+    sender = event_data.get("from", "")
+    subject = event_data.get("subject", "")
+    email_id = event_data.get("id", "")
+    attachments_meta = event_data.get("attachments", [])
+
+    log.info(f"Inbound email from {sender}, subject: '{subject}', email_id: {email_id}, attachments: {len(attachments_meta)}")
 
     # Detect brand from subject
     brand_slug = _detect_brand_from_subject(subject)
@@ -405,24 +449,45 @@ async def inbound_email(request: Request, background_tasks: BackgroundTasks):
             status_code=400,
         )
 
-    # Find CSV attachment
-    csv_attachment = None
-    for att in attachments:
+    # Find CSV attachment metadata
+    csv_att_meta = None
+    for att in attachments_meta:
         filename = (att.get("filename") or "").lower()
-        if filename.endswith(".csv"):
-            csv_attachment = att
+        content_type = (att.get("content_type") or "").lower()
+        if filename.endswith(".csv") or "csv" in content_type:
+            csv_att_meta = att
             break
 
-    if not csv_attachment:
+    if not csv_att_meta:
+        log.warning("No CSV attachment found in inbound email")
         return JSONResponse(
             {"error": "No CSV attachment found. Attach a .csv file with ticket data."},
             status_code=400,
         )
 
-    # Decode attachment (Resend sends base64-encoded content)
-    import base64
+    # Fetch actual attachment content from Resend API
+    att_id = csv_att_meta.get("id", "")
+    csv_bytes = None
+
+    if att_id:
+        # Method 1: Fetch via Attachments API (preferred)
+        csv_bytes = await _fetch_resend_attachment(att_id)
+
+    if not csv_bytes and csv_att_meta.get("content"):
+        # Method 2: Fallback — attachment content included directly (base64)
+        import base64
+        try:
+            csv_bytes = base64.b64decode(csv_att_meta["content"])
+        except Exception:
+            pass
+
+    if not csv_bytes:
+        return JSONResponse(
+            {"error": "Could not retrieve CSV attachment content from Resend."},
+            status_code=500,
+        )
+
     try:
-        csv_bytes = base64.b64decode(csv_attachment["content"])
         csv_text = csv_bytes.decode("utf-8-sig")
     except Exception as e:
         return JSONResponse({"error": f"Could not decode CSV: {e}"}, status_code=400)
