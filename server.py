@@ -77,7 +77,7 @@ async def home():
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-async def generate_and_send_report():
+async def generate_and_send_report(recipient_email: str = None):
     """Full pipeline: fetch → compute → analyze → build → send."""
     global latest_report_html
 
@@ -150,9 +150,15 @@ async def generate_and_send_report():
         with open(report_path, "w") as f:
             f.write(html)
 
-        # 4. Send email
+        # 4. Send email — to uploader + always CC otto@agentway.com
         subject = f"Customer Insights Report — {period_start} to {period_end}"
-        email_result = await send_report(html, subject)
+        recipients = []
+        if recipient_email:
+            recipients.append(recipient_email)
+        # Always include otto@agentway.com
+        if "otto@agentway.com" not in recipients:
+            recipients.append("otto@agentway.com")
+        email_result = await send_report(html, subject, recipients=recipients if recipients else None)
         audit.log_email(
             recipients=email_result.get("recipients", []),
             success=email_result.get("success", False),
@@ -196,9 +202,9 @@ async def health():
 
 
 @app.post("/generate-report")
-async def trigger_report(background_tasks: BackgroundTasks):
+async def trigger_report(background_tasks: BackgroundTasks, email: str = None):
     """Manually trigger a report generation. Runs in the background."""
-    background_tasks.add_task(generate_and_send_report)
+    background_tasks.add_task(generate_and_send_report, recipient_email=email)
     return {
         "status": "generating",
         "message": "Report generation started. Check /reports/latest or /audit/runs for results.",

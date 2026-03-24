@@ -165,6 +165,9 @@
         <div class="brand-chip" data-brand="KNKG" onclick="selectBrand(this)">KNKG</div>
       </div>
 
+      <label>Your Email (report will be sent here)</label>
+      <input type="email" id="userEmail" placeholder="you@company.com" style="width:100%;padding:10px 12px;border:1px solid #dee2e6;border-radius:6px;font-size:14px;margin-bottom:20px;">
+
       <label>CSV File (Agentway Topic Export)</label>
       <input type="file" id="csvFile" accept=".csv">
 
@@ -202,15 +205,18 @@
     }
 
     document.getElementById('csvFile').addEventListener('change', checkReady);
+    document.getElementById('userEmail').addEventListener('input', checkReady);
 
     function checkReady() {
       const file = document.getElementById('csvFile').files[0];
-      document.getElementById('uploadBtn').disabled = !(selectedBrand && file);
+      const email = document.getElementById('userEmail').value.trim();
+      document.getElementById('uploadBtn').disabled = !(selectedBrand && file && email);
     }
 
     async function uploadAndGenerate() {
       const file = document.getElementById('csvFile').files[0];
-      if (!selectedBrand || !file) return;
+      const email = document.getElementById('userEmail').value.trim();
+      if (!selectedBrand || !file || !email) return;
 
       const statusEl = document.getElementById('status');
       const btn = document.getElementById('uploadBtn');
@@ -242,7 +248,7 @@
         statusEl.innerHTML = '<span class="spinner"></span> Uploaded ' + uploadData.tickets_parsed +
           ' tickets. Generating report with Claude...';
 
-        const reportResp = await fetch('/generate-report', { method: 'POST' });
+        const reportResp = await fetch('/generate-report?email=' + encodeURIComponent(email), { method: 'POST' });
         const reportData = await reportResp.json();
 
         statusEl.className = 'status success';
