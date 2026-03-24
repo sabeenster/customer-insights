@@ -13,9 +13,9 @@
 
           <!-- Header -->
           <tr>
-            <td style="background-color:#1a1a2e; padding:32px 40px;">
-              <h1 style="color:#ffffff; margin:0; font-size:22px; font-weight:600;">Customer Insights Report</h1>
-              <p style="color:#a0a0b8; margin:8px 0 0 0; font-size:14px;">
+            <td style="background-color:#1a1a2e; padding:28px 40px;">
+              <h1 style="color:#ffffff; margin:0; font-size:20px; font-weight:600;">Customer Insights Report</h1>
+              <p style="color:#a0a0b8; margin:6px 0 0 0; font-size:13px;">
                 {{ period_start }} &mdash; {{ period_end }}
               </p>
             </td>
@@ -23,25 +23,20 @@
 
           <!-- Data Sources Banner -->
           <tr>
-            <td style="padding:20px 40px; background-color:#f8f9fa; border-bottom:1px solid #e9ecef;">
-              <p style="margin:0; font-size:13px; color:#6c757d; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Data Sources</p>
-              <table cellpadding="0" cellspacing="0" style="margin-top:8px;">
-                {% for source_name, source_info in data_sources.items() %}
+            <td style="padding:16px 40px; background-color:#f8f9fa; border-bottom:1px solid #e9ecef;">
+              <table cellpadding="0" cellspacing="0" style="width:100%;">
                 <tr>
-                  <td style="padding:2px 0;">
+                  {% for source_name, source_info in data_sources.items() %}
+                  <td style="padding:2px 16px 2px 0; font-size:12px; color:#6c757d;">
                     {% if source_info.status == 'ok' %}
-                    <span style="color:#28a745; font-size:14px;">&#10003;</span>
+                    <span style="color:#28a745;">&#10003;</span>
                     {% else %}
-                    <span style="color:#dc3545; font-size:14px;">&#10007;</span>
+                    <span style="color:#dc3545;">&#10007;</span>
                     {% endif %}
-                    <span style="color:#495057; font-size:13px; margin-left:6px;">
-                      {{ source_name }}: {{ source_info.record_count }} records
-                      {% if source_info.date_range %}({{ source_info.date_range }}){% endif %}
-                      {% if source_info.error %}<em style="color:#dc3545;"> &mdash; {{ source_info.error }}</em>{% endif %}
-                    </span>
+                    {{ source_name }}: <strong>{{ source_info.record_count }}</strong> records
                   </td>
+                  {% endfor %}
                 </tr>
-                {% endfor %}
               </table>
             </td>
           </tr>
@@ -49,7 +44,7 @@
           <!-- Insight Sections -->
           {% for section in sections %}
           <tr>
-            <td style="padding:24px 40px; border-bottom:1px solid #f0f0f0;">
+            <td style="padding:20px 40px; {% if not loop.last %}border-bottom:1px solid #f0f0f0;{% endif %}">
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td style="
@@ -61,33 +56,14 @@
                     {% endif %};
                     padding-left:16px;
                   ">
-                    <h2 style="margin:0 0 4px 0; font-size:16px; color:#1a1a2e;">{{ section.title }}</h2>
-                    <!-- Confidence badge -->
-                    <span style="
-                      display:inline-block;
-                      font-size:11px;
-                      font-weight:600;
-                      text-transform:uppercase;
-                      letter-spacing:0.5px;
-                      padding:2px 8px;
-                      border-radius:3px;
-                      margin-bottom:12px;
-                      {% if section.confidence == 'high' %}
-                      background-color:#d4edda; color:#155724;
-                      {% elif section.confidence == 'medium' %}
-                      background-color:#fff3cd; color:#856404;
-                      {% else %}
-                      background-color:#f8d7da; color:#721c24;
-                      {% endif %}
-                    ">{{ section.confidence }} confidence</span>
+                    <h2 style="margin:0 0 10px 0; font-size:15px; color:#1a1a2e; text-transform:uppercase; letter-spacing:0.5px;">{{ section.title }}</h2>
 
-                    <div style="font-size:14px; line-height:1.6; color:#333333; margin-top:8px;">
+                    <div style="font-size:14px; line-height:1.6; color:#333333;">
                       {{ section.content_html | safe }}
                     </div>
 
-                    <!-- Source citation -->
                     {% if section.based_on %}
-                    <p style="margin:12px 0 0 0; font-size:12px; color:#868e96; font-style:italic;">
+                    <p style="margin:10px 0 0 0; font-size:11px; color:#adb5bd; font-style:italic;">
                       Based on: {{ section.based_on }}
                     </p>
                     {% endif %}
@@ -100,13 +76,10 @@
 
           <!-- Footer -->
           <tr>
-            <td style="padding:24px 40px; background-color:#f8f9fa; border-top:1px solid #e9ecef;">
-              <p style="margin:0; font-size:12px; color:#868e96; line-height:1.5;">
+            <td style="padding:20px 40px; background-color:#f8f9fa; border-top:1px solid #e9ecef;">
+              <p style="margin:0; font-size:11px; color:#adb5bd; line-height:1.5;">
                 Report ID: {{ run_id }} | Generated: {{ generated_at }}<br>
-                Sources: {% for name, info in data_sources.items() %}{{ name }} ({% if info.status == 'ok' %}&#10003;{% else %}&#10007;{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}
-              </p>
-              <p style="margin:12px 0 0 0; font-size:11px; color:#adb5bd;">
-                This report was generated by Customer Insights powered by AI analysis. All insights are grounded in the data sources listed above.
+                Powered by <strong>Agentway</strong> &mdash; AI-driven customer intelligence
               </p>
             </td>
           </tr>

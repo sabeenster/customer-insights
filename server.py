@@ -344,6 +344,114 @@ async def upload_richpanel_csv(file: UploadFile = File(...)):
     }
 
 
+# ── Inbound Email Webhook (Resend) ────────────────────────────────────────────
+
+# Brand name → project slug mapping
+BRAND_MAP = {
+    "future kind": "future",
+    "futurekind": "future",
+    "emme": "emme",
+    "emme mama": "emme",
+    "emmemama": "emme",
+    "dippin daisy": "dippindaisys",
+    "dippindaisy": "dippindaisys",
+    "big moods": "bigmoods",
+    "bigmoods": "bigmoods",
+    "knkg": "knkg",
+}
+
+
+def _detect_brand_from_subject(subject: str) -> str | None:
+    """Extract brand slug from email subject line. Case-insensitive."""
+    subject_lower = subject.lower().strip()
+    for brand_name, slug in BRAND_MAP.items():
+        if brand_name in subject_lower:
+            return slug
+    return None
+
+
+@app.post("/webhook/inbound-email")
+async def inbound_email(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive inbound emails from Resend webhook.
+    Expects email to otto@agentway.com with a CSV attachment.
+    Subject line must contain a brand name (e.g., "Future Kind Topics").
+
+    Resend inbound webhook payload:
+    {
+      "from": "sender@example.com",
+      "to": "otto@agentway.com",
+      "subject": "Future Kind Topics",
+      "attachments": [{"filename": "...", "content": "base64..."}]
+    }
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
+
+    sender = payload.get("from", "")
+    subject = payload.get("subject", "")
+    attachments = payload.get("attachments", [])
+
+    log.info(f"Inbound email from {sender}, subject: '{subject}', attachments: {len(attachments)}")
+
+    # Detect brand from subject
+    brand_slug = _detect_brand_from_subject(subject)
+    if not brand_slug:
+        log.warning(f"Could not detect brand from subject: '{subject}'")
+        return JSONResponse(
+            {"error": f"Could not detect brand from subject '{subject}'. Include one of: Future Kind, Emme, Dippin Daisy, Big Moods, KNKG"},
+            status_code=400,
+        )
+
+    # Find CSV attachment
+    csv_attachment = None
+    for att in attachments:
+        filename = (att.get("filename") or "").lower()
+        if filename.endswith(".csv"):
+            csv_attachment = att
+            break
+
+    if not csv_attachment:
+        return JSONResponse(
+            {"error": "No CSV attachment found. Attach a .csv file with ticket data."},
+            status_code=400,
+        )
+
+    # Decode attachment (Resend sends base64-encoded content)
+    import base64
+    try:
+        csv_bytes = base64.b64decode(csv_attachment["content"])
+        csv_text = csv_bytes.decode("utf-8-sig")
+    except Exception as e:
+        return JSONResponse({"error": f"Could not decode CSV: {e}"}, status_code=400)
+
+    # Parse CSV (auto-detect format)
+    tickets = parse_csv(csv_text)
+    if not tickets:
+        return JSONResponse({"error": "No tickets found in CSV."}, status_code=400)
+
+    # Filter to brand if project data exists
+    if any(t.get("project_slug") for t in tickets):
+        filtered = [t for t in tickets if (t.get("project_slug") or "").lower() == brand_slug]
+        if filtered:
+            tickets = filtered
+
+    save_data(tickets)
+    log.info(f"Inbound email: {len(tickets)} tickets saved for brand '{brand_slug}', triggering report")
+
+    # Auto-generate report
+    background_tasks.add_task(generate_and_send_report)
+
+    return {
+        "status": "accepted",
+        "brand": brand_slug,
+        "tickets_parsed": len(tickets),
+        "message": f"CSV processed for {brand_slug}. Report generating and will be emailed.",
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)

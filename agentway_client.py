@@ -78,33 +78,40 @@ def parse_topics_csv(csv_content: str) -> list[dict]:
     Parse the Beekeeper SQL 'Topics' CSV export into a list of ticket dicts.
 
     The CSV contains one row per ticket × topic × topic_set_version.
-    We deduplicate by keeping only the LATEST topic_set_version per ticket,
-    then aggregate multiple topics for the same ticket into a list.
+    For each ticket, we use topics from its HIGHEST available version
+    (not the global max — so older tickets classified under earlier
+    versions are preserved rather than dropped).
+    Multiple topics per ticket are aggregated into a list.
     """
     reader = csv.DictReader(io.StringIO(csv_content))
 
     all_rows = []
-    project_max_version = defaultdict(int)
+    # Track the highest version each ticket appears in
+    ticket_max_version = defaultdict(int)
     for row in reader:
         cleaned = {k.strip().lower().replace(" ", "_"): v.strip() if v else None for k, v in row.items()}
         all_rows.append(cleaned)
-        project = cleaned.get("project_name") or cleaned.get("project_slug") or "unknown"
-        v = _safe_int(cleaned.get("topic_set_version"))
-        if v > project_max_version[project]:
-            project_max_version[project] = v
+        tid = cleaned.get("friendly_id")
+        if tid:
+            v = _safe_int(cleaned.get("topic_set_version"))
+            if v > ticket_max_version[tid]:
+                ticket_max_version[tid] = v
 
-    log.info(f"Topics CSV raw rows: {len(all_rows)}, projects: {dict(project_max_version)}")
+    log.info(f"Topics CSV raw rows: {len(all_rows)}, unique tickets: {len(ticket_max_version)}")
 
-    latest_rows = []
+    # For each ticket, keep only rows from its highest available version
+    best_rows = []
     for r in all_rows:
-        project = r.get("project_name") or r.get("project_slug") or "unknown"
+        tid = r.get("friendly_id")
+        if not tid:
+            continue
         v = _safe_int(r.get("topic_set_version"))
-        if v == project_max_version[project]:
-            latest_rows.append(r)
-    log.info(f"Rows after filtering to latest version per project: {len(latest_rows)}")
+        if v == ticket_max_version[tid]:
+            best_rows.append(r)
+    log.info(f"Rows after per-ticket version selection: {len(best_rows)}")
 
     ticket_map = {}
-    for row in latest_rows:
+    for row in best_rows:
         tid = row.get("friendly_id")
         if not tid:
             continue
@@ -131,7 +138,7 @@ def parse_topics_csv(csv_content: str) -> list[dict]:
             })
 
     tickets = list(ticket_map.values())
-    log.info(f"Parsed {len(tickets)} unique tickets from Topics CSV")
+    log.info(f"Parsed {len(tickets)} unique tickets from Topics CSV (0 dropped)")
     return tickets
 
 
@@ -276,7 +283,8 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
                 # Handle various date formats
                 dt_str = closed[:10]
                 dt = datetime.strptime(dt_str, "%Y-%m-%d")
-                week_key = dt.strftime("%Y-W%W")
+                iso = dt.isocalendar()
+                week_key = f"{iso[0]}-W{iso[1]:02d}"
                 weekly_volume[week_key] += 1
             except (ValueError, IndexError):
                 pass
