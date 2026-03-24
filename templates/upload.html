@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customer Insights — Upload</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #f4f4f7;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+    .header {
+      background: #1a1a2e;
+      padding: 24px 40px;
+      color: #fff;
+    }
+    .header h1 { font-size: 20px; font-weight: 600; }
+    .header p { color: #a0a0b8; font-size: 13px; margin-top: 4px; }
+    .container {
+      max-width: 720px;
+      margin: 32px auto;
+      padding: 0 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      padding: 32px;
+      margin-bottom: 24px;
+    }
+    .card h2 {
+      font-size: 16px;
+      margin-bottom: 20px;
+      color: #1a1a2e;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #495057;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    select, input[type="file"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 20px;
+      background: #fff;
+    }
+    select:focus, input[type="file"]:focus {
+      outline: none;
+      border-color: #1a1a2e;
+      box-shadow: 0 0 0 2px rgba(26,26,46,0.1);
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 28px;
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #2d2d4e; }
+    .btn:disabled {
+      background: #adb5bd;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: #fff;
+      color: #1a1a2e;
+      border: 1px solid #dee2e6;
+    }
+    .btn-secondary:hover { background: #f8f9fa; }
+    .status {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.5;
+      display: none;
+    }
+    .status.info { display: block; background: #e8f4fd; color: #0c5460; border: 1px solid #bee5eb; }
+    .status.success { display: block; background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status.error { display: block; background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .status.loading { display: block; background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #856404;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .recent-reports {
+      margin-top: 8px;
+    }
+    .recent-reports a {
+      color: #1a1a2e;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .recent-reports a:hover { text-decoration: underline; }
+    .brands-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .brand-chip {
+      padding: 8px 12px;
+      border: 2px solid #dee2e6;
+      border-radius: 6px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .brand-chip:hover { border-color: #1a1a2e; }
+    .brand-chip.selected {
+      border-color: #1a1a2e;
+      background: #1a1a2e;
+      color: #fff;
+    }
+    .footer {
+      text-align: center;
+      padding: 20px;
+      font-size: 11px;
+      color: #adb5bd;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Customer Insights</h1>
+    <p>Upload topic data, generate AI-powered reports</p>
+  </div>
+
+  <div class="container">
+    <!-- Upload Card -->
+    <div class="card">
+      <h2>Upload & Generate Report</h2>
+
+      <label>Select Brand</label>
+      <div class="brands-grid" id="brandGrid">
+        <div class="brand-chip" data-brand="Future Kind" onclick="selectBrand(this)">Future Kind</div>
+        <div class="brand-chip" data-brand="Emme Mama" onclick="selectBrand(this)">Emme Mama</div>
+        <div class="brand-chip" data-brand="Dippin Daisy" onclick="selectBrand(this)">Dippin Daisy</div>
+        <div class="brand-chip" data-brand="Big Moods" onclick="selectBrand(this)">Big Moods</div>
+        <div class="brand-chip" data-brand="KNKG" onclick="selectBrand(this)">KNKG</div>
+      </div>
+
+      <label>CSV File (Agentway Topic Export)</label>
+      <input type="file" id="csvFile" accept=".csv">
+
+      <div style="display:flex; gap:12px;">
+        <button class="btn" id="uploadBtn" onclick="uploadAndGenerate()" disabled>Upload & Generate Report</button>
+        <a href="/reports/latest" class="btn btn-secondary" target="_blank">View Latest Report</a>
+      </div>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card">
+      <h2>Quick Actions</h2>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <a href="/health" class="btn btn-secondary" target="_blank">Health Check</a>
+        <a href="/audit/runs" class="btn btn-secondary" target="_blank">Audit Runs</a>
+        <a href="/reports/latest" class="btn btn-secondary" target="_blank">Latest Report</a>
+      </div>
+    </div>
+
+    <div class="footer">
+      Powered by <strong>Agentway</strong> &mdash; AI-driven customer intelligence
+    </div>
+  </div>
+
+  <script>
+    let selectedBrand = null;
+
+    function selectBrand(el) {
+      document.querySelectorAll('.brand-chip').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      selectedBrand = el.dataset.brand;
+      checkReady();
+    }
+
+    document.getElementById('csvFile').addEventListener('change', checkReady);
+
+    function checkReady() {
+      const file = document.getElementById('csvFile').files[0];
+      document.getElementById('uploadBtn').disabled = !(selectedBrand && file);
+    }
+
+    async function uploadAndGenerate() {
+      const file = document.getElementById('csvFile').files[0];
+      if (!selectedBrand || !file) return;
+
+      const statusEl = document.getElementById('status');
+      const btn = document.getElementById('uploadBtn');
+      btn.disabled = true;
+
+      // Step 1: Upload
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span> Uploading ' + file.name + ' for ' + selectedBrand + '...';
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const uploadResp = await fetch('/upload/agentway-csv', {
+          method: 'POST',
+          body: formData
+        });
+        const uploadData = await uploadResp.json();
+
+        if (!uploadResp.ok) {
+          statusEl.className = 'status error';
+          statusEl.textContent = 'Upload failed: ' + (uploadData.error || 'Unknown error');
+          btn.disabled = false;
+          return;
+        }
+
+        // Step 2: Generate report
+        statusEl.className = 'status loading';
+        statusEl.innerHTML = '<span class="spinner"></span> Uploaded ' + uploadData.tickets_parsed +
+          ' tickets. Generating report with Claude...';
+
+        const reportResp = await fetch('/generate-report', { method: 'POST' });
+        const reportData = await reportResp.json();
+
+        statusEl.className = 'status success';
+        statusEl.innerHTML = '<strong>Report generating!</strong> ' + uploadData.tickets_parsed +
+          ' tickets for ' + selectedBrand + '.<br>' +
+          'Check your email in 1-2 minutes, or <a href="/reports/latest" target="_blank"><strong>view it here</strong></a> once ready.';
+
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>

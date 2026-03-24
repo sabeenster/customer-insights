@@ -18,7 +18,6 @@ import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, BackgroundTasks, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -66,6 +65,14 @@ app = FastAPI(
     description="AI-powered customer insights for brand executives",
     lifespan=lifespan,
 )
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    """Web UI for uploading CSVs and generating reports."""
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "upload.html")
+    with open(template_path) as f:
+        return HTMLResponse(content=f.read())
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -342,178 +349,6 @@ async def upload_richpanel_csv(file: UploadFile = File(...)):
         "assignee_breakdown": metrics.get("assignee_breakdown", []),
         "status_breakdown": metrics.get("status_breakdown", {}),
         "message": "Data saved. Use POST /generate-report to create the report.",
-    }
-
-
-# ── Inbound Email Webhook (Resend) ────────────────────────────────────────────
-
-# Brand name → project slug mapping
-BRAND_MAP = {
-    "future kind": "future",
-    "futurekind": "future",
-    "emme": "emme",
-    "emme mama": "emme",
-    "emmemama": "emme",
-    "dippin daisy": "dippindaisys",
-    "dippindaisy": "dippindaisys",
-    "big moods": "bigmoods",
-    "bigmoods": "bigmoods",
-    "knkg": "knkg",
-}
-
-
-def _detect_brand_from_subject(subject: str) -> str | None:
-    """Extract brand slug from email subject line. Case-insensitive."""
-    subject_lower = subject.lower().strip()
-    for brand_name, slug in BRAND_MAP.items():
-        if brand_name in subject_lower:
-            return slug
-    return None
-
-
-async def _fetch_resend_email(email_id: str) -> dict | None:
-    """Fetch full email details from Resend Received Emails API."""
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                f"https://api.resend.com/emails/{email_id}",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        log.error(f"Failed to fetch email {email_id} from Resend: {e}")
-        return None
-
-
-async def _fetch_resend_attachment(attachment_id: str) -> bytes | None:
-    """Download attachment content from Resend Attachments API."""
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(
-                f"https://api.resend.com/attachments/{attachment_id}",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # Resend returns base64-encoded content
-            import base64
-            return base64.b64decode(data.get("content", ""))
-    except Exception as e:
-        log.error(f"Failed to fetch attachment {attachment_id}: {e}")
-        return None
-
-
-@app.post("/webhook/inbound-email")
-async def inbound_email(request: Request, background_tasks: BackgroundTasks):
-    """
-    Receive inbound emails from Resend webhook (email.received event).
-
-    Resend webhooks only contain metadata — we must call the Resend API
-    to fetch the actual email body and attachment content.
-
-    Flow:
-    1. Receive webhook with email metadata (sender, subject, attachment IDs)
-    2. Detect brand from subject line
-    3. Fetch CSV attachment via Resend Attachments API
-    4. Parse, save, and generate report
-    """
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
-
-    # Resend webhook wraps data in {"type": "email.received", "data": {...}}
-    event_type = payload.get("type", "")
-    event_data = payload.get("data", payload)  # fallback to root if no wrapper
-
-    sender = event_data.get("from", "")
-    subject = event_data.get("subject", "")
-    email_id = event_data.get("id", "")
-    attachments_meta = event_data.get("attachments", [])
-
-    log.info(f"Inbound email from {sender}, subject: '{subject}', email_id: {email_id}, attachments: {len(attachments_meta)}")
-
-    # Detect brand from subject
-    brand_slug = _detect_brand_from_subject(subject)
-    if not brand_slug:
-        log.warning(f"Could not detect brand from subject: '{subject}'")
-        return JSONResponse(
-            {"error": f"Could not detect brand from subject '{subject}'. Include one of: Future Kind, Emme, Dippin Daisy, Big Moods, KNKG"},
-            status_code=400,
-        )
-
-    # Find CSV attachment metadata
-    csv_att_meta = None
-    for att in attachments_meta:
-        filename = (att.get("filename") or "").lower()
-        content_type = (att.get("content_type") or "").lower()
-        if filename.endswith(".csv") or "csv" in content_type:
-            csv_att_meta = att
-            break
-
-    if not csv_att_meta:
-        log.warning("No CSV attachment found in inbound email")
-        return JSONResponse(
-            {"error": "No CSV attachment found. Attach a .csv file with ticket data."},
-            status_code=400,
-        )
-
-    # Fetch actual attachment content from Resend API
-    att_id = csv_att_meta.get("id", "")
-    csv_bytes = None
-
-    if att_id:
-        # Method 1: Fetch via Attachments API (preferred)
-        csv_bytes = await _fetch_resend_attachment(att_id)
-
-    if not csv_bytes and csv_att_meta.get("content"):
-        # Method 2: Fallback — attachment content included directly (base64)
-        import base64
-        try:
-            csv_bytes = base64.b64decode(csv_att_meta["content"])
-        except Exception:
-            pass
-
-    if not csv_bytes:
-        return JSONResponse(
-            {"error": "Could not retrieve CSV attachment content from Resend."},
-            status_code=500,
-        )
-
-    try:
-        csv_text = csv_bytes.decode("utf-8-sig")
-    except Exception as e:
-        return JSONResponse({"error": f"Could not decode CSV: {e}"}, status_code=400)
-
-    # Parse CSV (auto-detect format)
-    tickets = parse_csv(csv_text)
-    if not tickets:
-        return JSONResponse({"error": "No tickets found in CSV."}, status_code=400)
-
-    # Filter to brand if project data exists
-    if any(t.get("project_slug") for t in tickets):
-        filtered = [t for t in tickets if (t.get("project_slug") or "").lower() == brand_slug]
-        if filtered:
-            tickets = filtered
-
-    save_data(tickets)
-    log.info(f"Inbound email: {len(tickets)} tickets saved for brand '{brand_slug}', triggering report")
-
-    # Auto-generate report
-    background_tasks.add_task(generate_and_send_report)
-
-    return {
-        "status": "accepted",
-        "brand": brand_slug,
-        "tickets_parsed": len(tickets),
-        "message": f"CSV processed for {brand_slug}. Report generating and will be emailed.",
     }
 
 
