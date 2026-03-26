@@ -149,6 +149,49 @@ class AnalysisEngine:
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=120.0)
 
+    @staticmethod
+    def _parse_json_response(text: str) -> dict:
+        """
+        Robustly parse JSON from Claude's response, handling:
+        - Markdown code block wrappers (```json ... ```)
+        - Invalid escape sequences (\')
+        - Smart/curly quotes (\u201c \u201d \u2018 \u2019)
+        - Other common Claude JSON quirks
+        """
+        # Strip markdown code blocks
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+
+        # Fix invalid JSON escapes
+        text = text.replace("\\'", "'")
+
+        # Replace smart/curly quotes with straight quotes
+        text = text.replace("\u201c", "&ldquo;")  # " → HTML entity (inside JSON strings)
+        text = text.replace("\u201d", "&rdquo;")  # " → HTML entity
+        text = text.replace("\u2018", "'")  # '
+        text = text.replace("\u2019", "'")  # '
+
+        # Try parsing
+        try:
+            return json.loads(text.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: try to find the JSON object boundaries manually
+        stripped = text.strip()
+        start = stripped.find("{")
+        end = stripped.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                return json.loads(stripped[start:end])
+            except json.JSONDecodeError:
+                pass
+
+        # Last resort: raise so the caller catches it
+        raise json.JSONDecodeError("Could not parse JSON from Claude response", text, 0)
+
     async def _api_call_with_retry(self, payload: dict, max_retries: int = 5) -> dict:
         """Make an Anthropic API call with retry on rate limits. Adapted from enrichment_agent.py."""
         response = None
@@ -219,14 +262,7 @@ class AnalysisEngine:
 
         # Parse JSON from response
         try:
-            # Handle case where Claude wraps JSON in markdown code blocks
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-            # Fix invalid JSON escapes Claude sometimes produces (e.g. \' is not valid JSON)
-            text = text.replace("\\'", "'")
-            insights = json.loads(text.strip())
+            insights = self._parse_json_response(text)
         except json.JSONDecodeError as e:
             log.error(f"Failed to parse Claude response as JSON: {e}")
             log.error(f"Text length: {len(text)}, first 200 chars: {text[:200]}")
