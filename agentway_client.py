@@ -60,6 +60,10 @@ def parse_insights_csv(csv_content: str) -> dict[str, dict]:
             fid = fid.split("-", 1)[1]
         if not fid:
             continue
+        # Parse Topic IDs (comma-separated UUIDs from Agentway dashboard)
+        topic_ids_raw = cleaned.get("topic_ids") or ""
+        topic_ids = [tid.strip() for tid in topic_ids_raw.split(",") if tid.strip()]
+
         result[fid] = {
             "topic_summary": cleaned.get("topic_summary"),
             "customer_name": cleaned.get("customer_name"),
@@ -68,6 +72,8 @@ def parse_insights_csv(csv_content: str) -> dict[str, dict]:
             "closed_reason": cleaned.get("closed_reason"),
             "status": cleaned.get("status"),
             "latest_activity": cleaned.get("latest_activity_at"),
+            "first_message_at": cleaned.get("first_message_at"),
+            "topic_ids": topic_ids,
         }
     log.info(f"Insights CSV: {len(result)} tickets with topic summaries")
     return result
@@ -155,7 +161,9 @@ def parse_csv(csv_content: str) -> list[dict]:
     if fmt == "topics":
         return parse_topics_csv(csv_content)
     else:
-        # Insights-only upload: convert to ticket list format
+        # Insights/dashboard upload: has Topic Summary (rich) + Topic IDs (UUIDs)
+        # Topic IDs are UUIDs, not human-readable names — so don't use them as topics.
+        # Instead, mark these tickets as having summaries for Claude to analyze directly.
         insights = parse_insights_csv(csv_content)
         tickets = []
         for fid, data in insights.items():
@@ -163,7 +171,11 @@ def parse_csv(csv_content: str) -> list[dict]:
                 "friendly_id": fid,
                 "status": data.get("status"),
                 "topic_summary": data.get("topic_summary"),
-                "topics": [],
+                "first_message_at": data.get("first_message_at"),
+                "latest_activity": data.get("latest_activity"),
+                "topics": [],  # No structured topic names — Claude will identify themes from summaries
+                "_has_topic_ids": bool(data.get("topic_ids")),
+                "_source": "insights_dashboard",
             })
         return tickets
 
@@ -240,7 +252,11 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
             if topic:
                 topic_counts[topic] += 1
 
-    top_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+    # Filter out UUID-style topic names (not human-readable)
+    import re
+    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    filtered_counts = {k: v for k, v in topic_counts.items() if not uuid_pattern.match(k)}
+    top_topics = sorted(filtered_counts.items(), key=lambda x: x[1], reverse=True)[:15]
 
     # Project breakdown
     project_counts = defaultdict(int)
@@ -338,12 +354,15 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
             })
     trending.sort(key=lambda x: x["recent_30d"], reverse=True)
 
-    # Sample topic summaries for AI context — representative across top topics
-    # Pick up to 2 examples per top topic, then fill remaining slots from other tickets
+    # Sample topic summaries for AI context
+    # If no structured topics exist, increase sample size so Claude can identify themes
+    has_structured_topics = len(top_topics) > 0 and not all(
+        len(name) > 30 for name, _ in top_topics  # UUID-length names = not real topic names
+    )
     topic_summaries_sample = []
     seen_ids = set()
     summaries_per_topic = defaultdict(int)
-    MAX_SAMPLES = 30
+    MAX_SAMPLES = 30 if has_structured_topics else 50  # More samples when Claude must identify themes
     MAX_PER_TOPIC = 2
 
     # First pass: get examples for each top topic
