@@ -224,6 +224,8 @@ class AnalysisEngine:
                 text = text.split("```json")[1].split("```")[0]
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
+            # Fix invalid JSON escapes Claude sometimes produces (e.g. \' is not valid JSON)
+            text = text.replace("\\'", "'")
             insights = json.loads(text.strip())
         except json.JSONDecodeError as e:
             log.error(f"Failed to parse Claude response as JSON: {e}")
