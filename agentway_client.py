@@ -474,8 +474,12 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
     date_range_start = all_dates[0] if all_dates else None
     date_range_end = all_dates[-1] if all_dates else None
 
+    # Determine primary project/brand name (most common)
+    primary_project = max(project_counts, key=project_counts.get) if project_counts else None
+
     return {
         "total_tickets": total,
+        "project_name": primary_project,
         "date_range_start": date_range_start,
         "date_range_end": date_range_end,
         "top_topics": [{"topic": name, "count": count, "pct": round(count / total * 100, 1)} for name, count in top_topics],

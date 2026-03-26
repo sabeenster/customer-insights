@@ -112,22 +112,34 @@ async def generate_and_send_report(recipient_email: str = None):
             log.error("Report generation aborted: no support ticket data")
             return
 
-        # 1b. Optionally fetch lightweight Shopify summary (READ-ONLY, matching CSV date range)
+        # 1b. Optionally fetch lightweight Shopify summary (READ-ONLY)
+        # IMPORTANT: Only pull Shopify data if the uploaded brand matches the configured store.
+        # Otherwise we contaminate reports with wrong-brand data (e.g., Future Kind products in Tipsy Elves report).
         shopify_summary = None
         if shopify.is_configured():
-            try:
-                # Use actual CSV date range instead of fixed lookback
-                csv_start = agentway_data.get("date_range_start")
-                csv_end = agentway_data.get("date_range_end")
-                if csv_start and csv_end:
-                    shopify_summary = await shopify.get_summary_metrics_by_date(csv_start, csv_end)
-                else:
-                    shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
-                if shopify_summary:
-                    audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
-                    log.info(f"Shopify summary loaded: {shopify_summary['current_period']['total_orders']} orders")
-            except Exception as e:
-                log.warning(f"Shopify summary skipped: {e}")
+            # Check if CSV brand matches configured Shopify store
+            csv_project = (agentway_data.get("project_name") or "").lower()
+            shopify_store = (os.getenv("SHOPIFY_STORE_URL") or "").lower()
+            brand_matches = any(
+                brand in shopify_store
+                for brand in [csv_project, csv_project.replace(" ", "")]
+                if csv_project
+            )
+            if brand_matches or not csv_project:
+                try:
+                    csv_start = agentway_data.get("date_range_start")
+                    csv_end = agentway_data.get("date_range_end")
+                    if csv_start and csv_end:
+                        shopify_summary = await shopify.get_summary_metrics_by_date(csv_start, csv_end)
+                    else:
+                        shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
+                    if shopify_summary:
+                        audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
+                        log.info(f"Shopify summary loaded: {shopify_summary['current_period']['total_orders']} orders")
+                except Exception as e:
+                    log.warning(f"Shopify summary skipped: {e}")
+            else:
+                log.info(f"Shopify skipped: CSV brand '{csv_project}' doesn't match store '{shopify_store}'")
         else:
             log.info("Shopify not configured — generating report from support data only")
 
