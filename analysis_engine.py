@@ -297,6 +297,13 @@ class AnalysisEngine:
         # Parse JSON from response
         try:
             insights = self._parse_json_response(text)
+            # Decode HTML entities back to real characters for rendering
+            import html as html_mod
+            for section in insights.get("sections", []):
+                if "content_html" in section:
+                    section["content_html"] = html_mod.unescape(section["content_html"])
+                if "based_on" in section:
+                    section["based_on"] = html_mod.unescape(section["based_on"])
         except json.JSONDecodeError as e:
             log.error(f"Failed to parse Claude response as JSON: {e}")
             log.error(f"Text length: {len(text)}, first 200 chars: {text[:200]}")
