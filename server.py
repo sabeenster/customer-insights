@@ -131,11 +131,14 @@ async def generate_and_send_report(recipient_email: str = None):
         audit.log_claude_response(result["raw_response"])
         insights = result["insights"]
 
-        # 3. Build HTML report
-        from datetime import timedelta
-        now = datetime.now(timezone.utc)
-        period_start = (now - timedelta(days=DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-        period_end = now.strftime("%Y-%m-%d")
+        # 3. Build HTML report — use actual date range from the data
+        period_start = agentway_data.get("date_range_start", "")
+        period_end = agentway_data.get("date_range_end", "")
+        if not period_start or not period_end:
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            period_start = (now - timedelta(days=DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+            period_end = now.strftime("%Y-%m-%d")
         html = build_report(
             insights=insights,
             run_id=audit.run_id,

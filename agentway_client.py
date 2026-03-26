@@ -463,8 +463,21 @@ def compute_support_metrics(tickets: list[dict]) -> dict:
         })
         seen_ids.add(fid)
 
+    # Date range from actual data
+    all_dates = []
+    for t in tickets:
+        for date_field in ["ticket_created_at", "first_message_at", "latest_activity"]:
+            d = t.get(date_field, "")
+            if d and len(d) >= 10:
+                all_dates.append(d[:10])
+    all_dates.sort()
+    date_range_start = all_dates[0] if all_dates else None
+    date_range_end = all_dates[-1] if all_dates else None
+
     return {
         "total_tickets": total,
+        "date_range_start": date_range_start,
+        "date_range_end": date_range_end,
         "top_topics": [{"topic": name, "count": count, "pct": round(count / total * 100, 1)} for name, count in top_topics],
         "project_breakdown": dict(project_counts),
         "resolution_time": {
