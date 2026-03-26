@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import PORT, DEFAULT_LOOKBACK_DAYS
 from shopify_client import ShopifyClient
-from agentway_client import parse_csv, merge_datasets, save_data, get_agentway_metrics, compute_support_metrics
+from agentway_client import parse_csv, merge_datasets, save_data, get_agentway_metrics, compute_support_metrics, save_topic_mapping_csv, load_topic_mapping
 from richpanel_client import parse_richpanel_csv, compute_richpanel_metrics
 from analysis_engine import AnalysisEngine
 from report_builder import build_report
@@ -355,6 +355,38 @@ async def upload_richpanel_csv(file: UploadFile = File(...)):
         "assignee_breakdown": metrics.get("assignee_breakdown", []),
         "status_breakdown": metrics.get("status_breakdown", {}),
         "message": "Data saved. Use POST /generate-report to create the report.",
+    }
+
+
+@app.post("/upload/topic-mapping")
+async def upload_topic_mapping(file: UploadFile = File(...)):
+    """
+    Upload a topic UUID → name mapping CSV (columns: id, name, description).
+    Export from Beekeeper: SELECT id, name, description FROM ticket_topics WHERE ...
+    This mapping is stored persistently and used to resolve Topic IDs in dashboard CSVs.
+    """
+    content = await file.read()
+    csv_text = content.decode("utf-8-sig")
+    result = save_topic_mapping_csv(csv_text)
+    if result["topics_loaded"] == 0:
+        return JSONResponse(
+            {"error": "No topics found. CSV must have columns: id, name, description"},
+            status_code=400,
+        )
+    return {
+        "status": "accepted",
+        "topics_loaded": result["topics_loaded"],
+        "message": "Topic mapping saved. Future dashboard CSV uploads will auto-resolve Topic IDs to names.",
+    }
+
+
+@app.get("/topic-mapping/status")
+async def topic_mapping_status():
+    """Check if a topic mapping is loaded."""
+    mapping = load_topic_mapping()
+    return {
+        "loaded": bool(mapping),
+        "topic_count": len(mapping),
     }
 
 

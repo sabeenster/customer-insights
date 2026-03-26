@@ -179,6 +179,16 @@
       <div class="status" id="status"></div>
     </div>
 
+    <!-- Topic Mapping -->
+    <div class="card">
+      <h2>Topic Mapping</h2>
+      <p style="font-size:13px;color:#6c757d;margin-bottom:12px;">Upload once — resolves Topic IDs (UUIDs) to readable names for all future reports.</p>
+      <div style="display:flex;align-items:center;gap:12px;" id="mappingStatus"></div>
+      <input type="file" id="mappingFile" accept=".csv" style="margin:12px 0;">
+      <button class="btn btn-secondary" onclick="uploadMapping()">Upload Mapping CSV</button>
+      <div class="status" id="mappingStatusMsg"></div>
+    </div>
+
     <!-- Quick Actions -->
     <div class="card">
       <h2>Quick Actions</h2>
@@ -262,6 +272,46 @@
       }
 
       btn.disabled = false;
+    }
+
+    // Topic mapping
+    async function checkMappingStatus() {
+      try {
+        const resp = await fetch('/topic-mapping/status');
+        const data = await resp.json();
+        const el = document.getElementById('mappingStatus');
+        if (data.loaded) {
+          el.innerHTML = '<span style="color:#28a745;font-weight:600;">Loaded: ' + data.topic_count + ' topics</span>';
+        } else {
+          el.innerHTML = '<span style="color:#dc3545;font-size:13px;">No mapping loaded — Topic IDs will not be resolved</span>';
+        }
+      } catch(e) {}
+    }
+    checkMappingStatus();
+
+    async function uploadMapping() {
+      const file = document.getElementById('mappingFile').files[0];
+      if (!file) return;
+      const statusEl = document.getElementById('mappingStatusMsg');
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span> Uploading mapping...';
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch('/upload/topic-mapping', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (resp.ok) {
+          statusEl.className = 'status success';
+          statusEl.textContent = data.topics_loaded + ' topics loaded. All future reports will use this mapping.';
+          checkMappingStatus();
+        } else {
+          statusEl.className = 'status error';
+          statusEl.textContent = data.error || 'Upload failed';
+        }
+      } catch(e) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + e.message;
+      }
     }
   </script>
 </body>

@@ -30,6 +30,61 @@ log = logging.getLogger("insights.agentway")
 # Path where uploaded CSV or latest data is stored
 DATA_DIR = os.path.join(os.path.dirname(__file__), "audit_logs")
 AGENTWAY_DATA_PATH = os.path.join(DATA_DIR, "agentway_latest.json")
+TOPIC_MAP_PATH = os.path.join(DATA_DIR, "topic_mapping.json")
+
+# In-memory topic UUID → name mapping
+_topic_map: dict[str, dict] = {}
+
+
+def load_topic_mapping() -> dict[str, dict]:
+    """Load topic UUID → name mapping from disk."""
+    global _topic_map
+    if _topic_map:
+        return _topic_map
+    if os.path.exists(TOPIC_MAP_PATH):
+        with open(TOPIC_MAP_PATH) as f:
+            _topic_map = json.load(f)
+        log.info(f"Topic mapping loaded: {len(_topic_map)} topics")
+    return _topic_map
+
+
+def save_topic_mapping_csv(csv_content: str) -> dict:
+    """
+    Parse and save a topic mapping CSV (id, name, description).
+    Returns summary stats.
+    """
+    global _topic_map
+    reader = csv.DictReader(io.StringIO(csv_content))
+    mapping = {}
+    for row in reader:
+        cleaned = {k.strip().lower(): (v.strip() if v else "") for k, v in row.items()}
+        topic_id = cleaned.get("id", "").strip()
+        name = cleaned.get("name", "").strip()
+        if topic_id and name:
+            mapping[topic_id] = {
+                "name": name,
+                "description": cleaned.get("description", ""),
+            }
+    if mapping:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(TOPIC_MAP_PATH, "w") as f:
+            json.dump(mapping, f)
+        _topic_map = mapping
+        log.info(f"Topic mapping saved: {len(mapping)} topics")
+    return {"topics_loaded": len(mapping)}
+
+
+def resolve_topic_ids(topic_ids: list[str]) -> list[dict]:
+    """Resolve topic UUIDs to human-readable names using the loaded mapping."""
+    mapping = load_topic_mapping()
+    if not mapping:
+        return []
+    resolved = []
+    for tid in topic_ids:
+        entry = mapping.get(tid)
+        if entry:
+            resolved.append({"name": entry["name"], "description": entry.get("description", "")})
+    return resolved
 
 
 def _detect_csv_format(headers: list[str]) -> str:
@@ -162,21 +217,22 @@ def parse_csv(csv_content: str) -> list[dict]:
         return parse_topics_csv(csv_content)
     else:
         # Insights/dashboard upload: has Topic Summary (rich) + Topic IDs (UUIDs)
-        # Topic IDs are UUIDs, not human-readable names — so don't use them as topics.
-        # Instead, mark these tickets as having summaries for Claude to analyze directly.
         insights = parse_insights_csv(csv_content)
         tickets = []
         for fid, data in insights.items():
+            # Resolve Topic IDs to human-readable names using mapping
+            topic_ids = data.get("topic_ids", [])
+            topics = resolve_topic_ids(topic_ids) if topic_ids else []
             tickets.append({
                 "friendly_id": fid,
                 "status": data.get("status"),
                 "topic_summary": data.get("topic_summary"),
                 "first_message_at": data.get("first_message_at"),
                 "latest_activity": data.get("latest_activity"),
-                "topics": [],  # No structured topic names — Claude will identify themes from summaries
-                "_has_topic_ids": bool(data.get("topic_ids")),
-                "_source": "insights_dashboard",
+                "topics": topics,  # Resolved names if mapping loaded, else empty
             })
+        resolved_count = sum(1 for t in tickets if t["topics"])
+        log.info(f"Dashboard CSV: {len(tickets)} tickets, {resolved_count} with resolved topics")
         return tickets
 
 
