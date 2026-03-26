@@ -54,6 +54,8 @@ Return a JSON object with this exact structure:
   ]
 }
 
+CRITICAL JSON RULE: Inside content_html and based_on string values, NEVER use literal double-quote characters ("). Instead use &quot; for any quoted text. For example: &quot;uncategorized&quot; not "uncategorized". This is essential for valid JSON.
+
 REQUIRED SECTIONS (exactly 2, in order):
 
 1. key_insights — Title: "Key Insights & Actions"
@@ -118,6 +120,8 @@ Return a JSON object with this exact structure:
   ]
 }
 
+CRITICAL JSON RULE: Inside content_html and based_on string values, NEVER use literal double-quote characters ("). Instead use &quot; for any quoted text. For example: &quot;uncategorized&quot; not "uncategorized". This is essential for valid JSON.
+
 REQUIRED SECTIONS (exactly 3, in order):
 
 1. key_insights — Title: "Key Insights & Actions"
@@ -153,11 +157,12 @@ class AnalysisEngine:
     def _parse_json_response(text: str) -> dict:
         """
         Robustly parse JSON from Claude's response, handling:
-        - Markdown code block wrappers (```json ... ```)
-        - Invalid escape sequences (\')
-        - Smart/curly quotes (\u201c \u201d \u2018 \u2019)
-        - Other common Claude JSON quirks
+        - Markdown code block wrappers
+        - Invalid escape sequences
+        - Unescaped quotes inside JSON string values
         """
+        import re
+
         # Strip markdown code blocks
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
@@ -167,29 +172,61 @@ class AnalysisEngine:
         # Fix invalid JSON escapes
         text = text.replace("\\'", "'")
 
-        # Replace smart/curly quotes with straight quotes
-        text = text.replace("\u201c", "&ldquo;")  # " → HTML entity (inside JSON strings)
-        text = text.replace("\u201d", "&rdquo;")  # " → HTML entity
-        text = text.replace("\u2018", "'")  # '
-        text = text.replace("\u2019", "'")  # '
+        # Replace smart/curly quotes with HTML entities
+        text = text.replace("\u201c", "&ldquo;")
+        text = text.replace("\u201d", "&rdquo;")
+        text = text.replace("\u2018", "&#39;")
+        text = text.replace("\u2019", "&#39;")
 
-        # Try parsing
+        # Try parsing directly first
         try:
             return json.loads(text.strip())
         except json.JSONDecodeError:
             pass
 
-        # Fallback: try to find the JSON object boundaries manually
+        # Fix unescaped quotes inside JSON string values.
+        # Strategy: find content_html values and escape quotes within them.
+        # Pattern: "content_html": "..." — the value often contains unescaped "
+        def fix_html_values(m):
+            """Escape unescaped double quotes inside JSON string values for HTML keys."""
+            prefix = m.group(1)  # "content_html": "
+            inner = m.group(2)   # the actual HTML content
+            # Escape any unescaped double quotes inside the HTML
+            fixed = inner.replace('"', '&quot;')
+            return prefix + fixed + '"'
+
+        # Match: "content_html": "...(greedy across the value)..."
+        # We look for the pattern and fix inner quotes
+        fixed = re.sub(
+            r'("(?:content_html|based_on|title)":\s*")(.*?)("(?:\s*[,}]))',
+            lambda m: m.group(1) + m.group(2).replace('"', '&quot;') + m.group(3),
+            text,
+            flags=re.DOTALL,
+        )
+
+        try:
+            return json.loads(fixed.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Last fallback: find JSON boundaries
         stripped = text.strip()
         start = stripped.find("{")
         end = stripped.rfind("}") + 1
         if start >= 0 and end > start:
+            chunk = stripped[start:end]
+            # Apply same fix
+            fixed2 = re.sub(
+                r'("(?:content_html|based_on|title)":\s*")(.*?)("(?:\s*[,}]))',
+                lambda m: m.group(1) + m.group(2).replace('"', '&quot;') + m.group(3),
+                chunk,
+                flags=re.DOTALL,
+            )
             try:
-                return json.loads(stripped[start:end])
+                return json.loads(fixed2)
             except json.JSONDecodeError:
                 pass
 
-        # Last resort: raise so the caller catches it
         raise json.JSONDecodeError("Could not parse JSON from Claude response", text, 0)
 
     async def _api_call_with_retry(self, payload: dict, max_retries: int = 5) -> dict:
