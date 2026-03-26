@@ -46,6 +46,51 @@ class ShopifyClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    async def get_summary_metrics_by_date(self, start_date: str, end_date: str) -> dict | None:
+        """
+        Fetch lightweight summary matching a specific date range (from CSV).
+        READ-ONLY. Makes exactly 3 API calls.
+        """
+        if not self.is_configured():
+            return None
+
+        try:
+            period_start = datetime.strptime(start_date[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            period_end = datetime.strptime(end_date[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            days_back = (period_end - period_start).days or 90
+            prior_start = period_start - timedelta(days=days_back)
+
+            current = await self._order_summary(period_start, period_end)
+            prior = await self._order_summary(prior_start, period_start)
+            top_products = await self._top_products(period_start)
+
+            summary = {
+                "period_days": days_back,
+                "current_period": {
+                    "start": period_start.strftime("%Y-%m-%d"),
+                    "end": period_end.strftime("%Y-%m-%d"),
+                    "total_orders": current["count"],
+                    "total_revenue": current["revenue"],
+                    "avg_order_value": round(current["revenue"] / current["count"], 2) if current["count"] > 0 else 0,
+                },
+                "prior_period": {
+                    "start": prior_start.strftime("%Y-%m-%d"),
+                    "end": period_start.strftime("%Y-%m-%d"),
+                    "total_orders": prior["count"],
+                    "total_revenue": prior["revenue"],
+                },
+                "order_trend": _trend_direction(current["count"], prior["count"]),
+                "revenue_trend": _trend_direction(current["revenue"], prior["revenue"]),
+                "top_products": top_products,
+            }
+
+            log.info(f"Shopify summary ({start_date} to {end_date}): {current['count']} orders, ${current['revenue']:.0f}")
+            return summary
+
+        except Exception as e:
+            log.warning(f"Shopify summary fetch failed: {e}")
+            return None
+
     async def get_summary_metrics(self, days_back: int = 90) -> dict | None:
         """
         Fetch lightweight aggregate metrics from Shopify.

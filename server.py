@@ -112,11 +112,17 @@ async def generate_and_send_report(recipient_email: str = None):
             log.error("Report generation aborted: no support ticket data")
             return
 
-        # 1b. Optionally fetch lightweight Shopify summary (if configured)
+        # 1b. Optionally fetch lightweight Shopify summary (READ-ONLY, matching CSV date range)
         shopify_summary = None
         if shopify.is_configured():
             try:
-                shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
+                # Use actual CSV date range instead of fixed lookback
+                csv_start = agentway_data.get("date_range_start")
+                csv_end = agentway_data.get("date_range_end")
+                if csv_start and csv_end:
+                    shopify_summary = await shopify.get_summary_metrics_by_date(csv_start, csv_end)
+                else:
+                    shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
                 if shopify_summary:
                     audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
                     log.info(f"Shopify summary loaded: {shopify_summary['current_period']['total_orders']} orders")
