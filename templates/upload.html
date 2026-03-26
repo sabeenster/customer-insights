@@ -158,11 +158,27 @@
 
       <label>Select Brand</label>
       <div class="brands-grid" id="brandGrid">
-        <div class="brand-chip" data-brand="Future Kind" onclick="selectBrand(this)">Future Kind</div>
-        <div class="brand-chip" data-brand="Emme Mama" onclick="selectBrand(this)">Emme Mama</div>
-        <div class="brand-chip" data-brand="Dippin Daisy" onclick="selectBrand(this)">Dippin Daisy</div>
-        <div class="brand-chip" data-brand="Big Moods" onclick="selectBrand(this)">Big Moods</div>
-        <div class="brand-chip" data-brand="KNKG" onclick="selectBrand(this)">KNKG</div>
+        <!-- Loaded dynamically from /api/brands -->
+      </div>
+      <div style="margin-bottom:20px;">
+        <button class="btn btn-secondary" onclick="document.getElementById('addBrandSection').style.display='block'" style="font-size:12px;padding:6px 14px;">+ Add Brand</button>
+      </div>
+      <div id="addBrandSection" style="display:none;background:#f8f9fa;border-radius:6px;padding:16px;margin-bottom:20px;">
+        <h3 style="font-size:14px;margin-bottom:12px;">Add New Brand</h3>
+        <input type="text" id="newBrandName" placeholder="Brand name (e.g. Tipsy Elves)" style="width:100%;padding:8px 10px;border:1px solid #dee2e6;border-radius:4px;font-size:13px;margin-bottom:8px;">
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-size:12px;color:#6c757d;">Shopify connection (optional)</summary>
+          <div style="margin-top:8px;">
+            <input type="text" id="newBrandShopifyUrl" placeholder="store.myshopify.com" style="width:100%;padding:8px 10px;border:1px solid #dee2e6;border-radius:4px;font-size:13px;margin-bottom:6px;">
+            <input type="password" id="newBrandShopifyToken" placeholder="Shopify Admin API access token (shpat_...)" style="width:100%;padding:8px 10px;border:1px solid #dee2e6;border-radius:4px;font-size:13px;margin-bottom:6px;">
+            <p style="font-size:11px;color:#adb5bd;margin:0;">Read-only. Used for order counts and product context. Never writes to Shopify.</p>
+          </div>
+        </details>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" onclick="saveBrand()" style="font-size:12px;padding:6px 14px;">Save Brand</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('addBrandSection').style.display='none'" style="font-size:12px;padding:6px 14px;">Cancel</button>
+        </div>
+        <div class="status" id="addBrandStatus"></div>
       </div>
 
       <label>Your Email (report will be sent here)</label>
@@ -207,11 +223,65 @@
   <script>
     let selectedBrand = null;
 
+    // Load brands from API on page load
+    async function loadBrands() {
+      try {
+        const resp = await fetch('/api/brands');
+        const data = await resp.json();
+        const grid = document.getElementById('brandGrid');
+        grid.innerHTML = '';
+        for (const brand of data.brands) {
+          const chip = document.createElement('div');
+          chip.className = 'brand-chip';
+          chip.dataset.brand = brand.name;
+          chip.onclick = function() { selectBrand(this); };
+          chip.innerHTML = brand.name + (brand.has_shopify ? ' <span style="color:#28a745;font-size:10px;" title="Shopify connected">&#9679;</span>' : '');
+          grid.appendChild(chip);
+        }
+      } catch(e) { console.error('Failed to load brands:', e); }
+    }
+    loadBrands();
+
     function selectBrand(el) {
       document.querySelectorAll('.brand-chip').forEach(c => c.classList.remove('selected'));
       el.classList.add('selected');
       selectedBrand = el.dataset.brand;
       checkReady();
+    }
+
+    async function saveBrand() {
+      const name = document.getElementById('newBrandName').value.trim();
+      if (!name) return;
+      const statusEl = document.getElementById('addBrandStatus');
+      const body = { name };
+      const shopifyUrl = document.getElementById('newBrandShopifyUrl').value.trim();
+      const shopifyToken = document.getElementById('newBrandShopifyToken').value.trim();
+      if (shopifyUrl) body.shopify_store_url = shopifyUrl;
+      if (shopifyToken) body.shopify_access_token = shopifyToken;
+
+      try {
+        const resp = await fetch('/api/brands', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        if (resp.ok) {
+          statusEl.className = 'status success';
+          statusEl.textContent = name + ' saved!';
+          document.getElementById('newBrandName').value = '';
+          document.getElementById('newBrandShopifyUrl').value = '';
+          document.getElementById('newBrandShopifyToken').value = '';
+          loadBrands();
+          setTimeout(() => { document.getElementById('addBrandSection').style.display = 'none'; statusEl.className = 'status'; }, 1500);
+        } else {
+          const data = await resp.json();
+          statusEl.className = 'status error';
+          statusEl.textContent = data.error || 'Failed to save';
+        }
+      } catch(e) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + e.message;
+      }
     }
 
     document.getElementById('csvFile').addEventListener('change', checkReady);
@@ -232,7 +302,6 @@
       const btn = document.getElementById('uploadBtn');
       btn.disabled = true;
 
-      // Step 1: Upload
       statusEl.className = 'status loading';
       statusEl.innerHTML = '<span class="spinner"></span> Uploading ' + file.name + ' for ' + selectedBrand + '...';
 
@@ -253,7 +322,6 @@
           return;
         }
 
-        // Step 2: Generate report
         statusEl.className = 'status loading';
         statusEl.innerHTML = '<span class="spinner"></span> Uploaded ' + uploadData.tickets_parsed +
           ' tickets. Generating report with Claude...';

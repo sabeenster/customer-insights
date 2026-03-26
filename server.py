@@ -27,6 +27,7 @@ from agentway_client import parse_csv, merge_datasets, save_data, get_agentway_m
 from richpanel_client import parse_richpanel_csv, compute_richpanel_metrics
 from analysis_engine import AnalysisEngine
 from report_builder import build_report
+from brands import list_brands, get_brand, add_brand, delete_brand, get_shopify_creds, seed_defaults
 from email_sender import send_report
 from audit_logger import AuditRun, list_runs, get_run
 from scheduler import start_scheduler, stop_scheduler
@@ -53,6 +54,7 @@ latest_report_html = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start scheduler on boot, stop on shutdown."""
+    seed_defaults()
     start_scheduler(generate_and_send_report)
     log.info("Customer Insights server started")
     yield
@@ -112,36 +114,31 @@ async def generate_and_send_report(recipient_email: str = None):
             log.error("Report generation aborted: no support ticket data")
             return
 
-        # 1b. Optionally fetch lightweight Shopify summary (READ-ONLY)
-        # IMPORTANT: Only pull Shopify data if the uploaded brand matches the configured store.
-        # Otherwise we contaminate reports with wrong-brand data (e.g., Future Kind products in Tipsy Elves report).
+        # 1b. Optionally fetch lightweight Shopify summary (READ-ONLY, per-brand)
+        # Look up Shopify creds for this brand — prevents cross-brand contamination.
         shopify_summary = None
-        if shopify.is_configured():
-            # Check if CSV brand matches configured Shopify store
-            csv_project = (agentway_data.get("project_name") or "").lower()
-            shopify_store = (os.getenv("SHOPIFY_STORE_URL") or "").lower()
-            brand_matches = any(
-                brand in shopify_store
-                for brand in [csv_project, csv_project.replace(" ", "")]
-                if csv_project
-            )
-            if brand_matches or not csv_project:
-                try:
-                    csv_start = agentway_data.get("date_range_start")
-                    csv_end = agentway_data.get("date_range_end")
-                    if csv_start and csv_end:
-                        shopify_summary = await shopify.get_summary_metrics_by_date(csv_start, csv_end)
-                    else:
-                        shopify_summary = await shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
-                    if shopify_summary:
-                        audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
-                        log.info(f"Shopify summary loaded: {shopify_summary['current_period']['total_orders']} orders")
-                except Exception as e:
-                    log.warning(f"Shopify summary skipped: {e}")
-            else:
-                log.info(f"Shopify skipped: CSV brand '{csv_project}' doesn't match store '{shopify_store}'")
+        csv_project = agentway_data.get("project_name") or ""
+        brand_creds = get_shopify_creds(csv_project) if csv_project else None
+
+        if brand_creds:
+            try:
+                brand_shopify = ShopifyClient(
+                    store_url=brand_creds["store_url"],
+                    access_token=brand_creds["access_token"],
+                )
+                csv_start = agentway_data.get("date_range_start")
+                csv_end = agentway_data.get("date_range_end")
+                if csv_start and csv_end:
+                    shopify_summary = await brand_shopify.get_summary_metrics_by_date(csv_start, csv_end)
+                else:
+                    shopify_summary = await brand_shopify.get_summary_metrics(days_back=DEFAULT_LOOKBACK_DAYS)
+                if shopify_summary:
+                    audit.log_data_source("Shopify", shopify_summary["current_period"]["total_orders"])
+                    log.info(f"Shopify summary for '{csv_project}': {shopify_summary['current_period']['total_orders']} orders")
+            except Exception as e:
+                log.warning(f"Shopify summary for '{csv_project}' skipped: {e}")
         else:
-            log.info("Shopify not configured — generating report from support data only")
+            log.info(f"No Shopify credentials for '{csv_project}' — generating from ticket data only")
 
         # 2. Generate AI insights from support ticket data + optional Shopify context
         result = await analysis.generate_insights(agentway_data, shopify_summary=shopify_summary)
@@ -409,6 +406,39 @@ async def topic_mapping_status():
         "loaded": bool(mapping),
         "topic_count": len(mapping),
     }
+
+
+# ── Brand Management ──────────────────────────────────────────────────────────
+
+@app.get("/api/brands")
+async def api_list_brands():
+    """List all configured brands."""
+    return {"brands": list_brands()}
+
+
+@app.post("/api/brands")
+async def api_add_brand(request: Request):
+    """Add or update a brand. Body: {name, slug?, shopify_store_url?, shopify_access_token?}"""
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Brand name is required"}, status_code=400)
+
+    brand = add_brand(
+        name=name,
+        slug=data.get("slug"),
+        shopify_store_url=data.get("shopify_store_url"),
+        shopify_access_token=data.get("shopify_access_token"),
+    )
+    return {"status": "saved", "brand": brand}
+
+
+@app.delete("/api/brands/{slug}")
+async def api_delete_brand(slug: str):
+    """Delete a brand by slug."""
+    if delete_brand(slug):
+        return {"status": "deleted"}
+    return JSONResponse({"error": "Brand not found"}, status_code=404)
 
 
 if __name__ == "__main__":

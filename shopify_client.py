@@ -21,18 +21,26 @@ log = logging.getLogger("insights.shopify")
 
 
 class ShopifyClient:
-    """Read-only Shopify client. Makes 3-4 lightweight API calls max."""
+    """Read-only Shopify client. Makes 3-4 lightweight API calls max. NEVER writes."""
 
-    def __init__(self):
-        self.base_url = f"https://{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}"
+    def __init__(self, store_url: str = None, access_token: str = None):
+        """
+        Create a Shopify client. Can use per-brand credentials or fall back to env vars.
+        Args:
+            store_url: e.g. "mystore.myshopify.com" (overrides SHOPIFY_STORE_URL env var)
+            access_token: Shopify Admin API token (overrides SHOPIFY_ACCESS_TOKEN env var)
+        """
+        self._store_url = store_url or SHOPIFY_STORE_URL
+        self._access_token = access_token or SHOPIFY_ACCESS_TOKEN
+        self.base_url = f"https://{self._store_url}/admin/api/{SHOPIFY_API_VERSION}"
         self.headers = {
-            "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+            "X-Shopify-Access-Token": self._access_token,
             "Content-Type": "application/json",
         }
         self.http = httpx.AsyncClient(timeout=30.0, headers=self.headers)
 
     def is_configured(self) -> bool:
-        return bool(SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN)
+        return bool(self._store_url and self._access_token)
 
     async def health_check(self) -> dict:
         """Check if Shopify API is reachable."""
